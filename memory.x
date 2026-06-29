@@ -8,3 +8,12 @@ MEMORY {
 /* Símbolos requeridos por panic-persist para encontrar la zona */
 _panic_dump_start = ORIGIN(PANDUMP);
 _panic_dump_end   = ORIGIN(PANDUMP) + LENGTH(PANDUMP);
+
+SECTIONS {
+    .bi_entries : ALIGN(4) {
+        __bi_entries_start = .;
+        KEEP(*(.bi_entries));
+        . = ALIGN(4);
+        __bi_entries_end = .;
+    } > FLASH
+} INSERT AFTER .text;
