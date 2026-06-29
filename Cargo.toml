@@ -3,4 +3,37 @@ name = "rust_pico_usb_console"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "pico_usb_console"
+path = "src/main.rs"
+
 [dependencies]
+embassy-executor = { version = "0.10.0", git = "https://github.com/embassy-rs/embassy", features = [
+    "platform-cortex-m", "executor-thread", "executor-interrupt"
+]}
+embassy-rp = { version = "0.10.0", git = "https://github.com/embassy-rs/embassy", features = ["unstable-pac", "time-driver", "critical-section-impl", "rp2040", "binary-info"] }
+
+embassy-usb  = { version = "0.6.0", git = "https://github.com/embassy-rs/embassy" }
+embassy-time = { version = "0.5.1", git = "https://github.com/embassy-rs/embassy" }
+embassy-sync = { version = "0.8.0", git = "https://github.com/embassy-rs/embassy" }
+
+cortex-m    = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+critical-section = "1.1"
+static_cell = "2"
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+heapless    = "0.9"
+
+# panic-persist: guarda el mensaje de pánico en RAM (zona PANDUMP, definida
+# en memory.x) y hace un soft-reset. En el siguiente boot el firmware lee
+# ese mensaje y lo envía por USB-CDC al conectarse el host.
+#
+# Feature "utf8": permite recuperar el mensaje como &str en lugar de &[u8],
+# lo que facilita enviarlo directamente por write_packet sin conversión.
+panic-persist = { version = "0.3", features = ["utf8"] }
+
+[profile.release]
+debug         = 2      # conservar símbolos para addr2line
+opt-level     = "s"    # optimizar por tamaño de flash
+lto           = true
+codegen-units = 1

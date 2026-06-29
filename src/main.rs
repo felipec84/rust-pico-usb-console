@@ -1,3 +1,217 @@
-fn main() {
-    println!("Hello, world!");
+#![no_std]
+#![no_main]
+
+use embassy_executor::Spawner;
+use embassy_rp::bind_interrupts;
+use embassy_rp::peripherals::USB;
+use embassy_rp::rom_data;
+use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::channel::Channel;
+use embassy_time::{Duration, Timer};
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::{Builder, Config};
+use static_cell::StaticCell;
+
+// panic-persist: en caso de pánico, escribe el mensaje en la zona PANDUMP
+// (definida en memory.x) y hace un soft-reset. El USB-CDC vuelve a estar
+// disponible en el siguiente boot. No uses panic-halt ni panic-reset junto
+// con este crate — panic-persist ya incluye su propio #[panic_handler].
+use panic_persist as _;
+
+// ─── Interrupciones ────────────────────────────────────────────────────────
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => InterruptHandler<USB>;
+});
+
+// ─── Canal de comunicación entre tareas ────────────────────────────────────
+static RX_CHANNEL: Channel<ThreadModeRawMutex, heapless::Vec<u8, 64>, 4> = Channel::new();
+
+// ─── Buffers estáticos para embassy-usb (StaticCell = sin unsafe) ──────────
+//
+// CAMBIO EN embassy-usb 0.6: Builder::new ya NO recibe device_descriptor.
+// Lo genera internamente. Solo se necesitan estos 4 buffers:
+//   config_descriptor, bos_descriptor, msos_descriptor, control_buf
+static STATE: StaticCell<State> = StaticCell::new();
+static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static MSOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+// ─── Punto de entrada ──────────────────────────────────────────────────────
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    // ── PASO 1: Leer mensaje de pánico ANTES de inicializar nada ──────────
+    //
+    // panic-persist guarda el mensaje en la zona PANDUMP de RAM. Hay que
+    // leerlo aquí, en el primer instante del boot, antes de que cualquier
+    // inicialización pueda sobrescribir esa zona.
+    //
+    // get_panic_message_utf8() verifica un magic number de 8 bytes; si no
+    // coincide (boot limpio o power-cycle), retorna None. Si hay mensaje
+    // válido (viene de un soft-reset tras pánico), retorna Some(&str).
+    //
+    // El &str es 'static: apunta directamente a la zona PANDUMP en RAM,
+    // que permanece válida durante toda la ejecución. No hay copia.
+    let panic_msg: Option<&'static str> = panic_persist::get_panic_message_utf8();
+
+    // ── PASO 2: Inicializar hardware ──────────────────────────────────────
+    let p = embassy_rp::init(Default::default());
+    let driver = Driver::new(p.USB, Irqs);
+
+    // ── PASO 3: Configurar USB ─────────────────────────────────────────────
+    // VID 0x2E8A = Raspberry Pi
+    // PID 0x000A = Pico con USB-CDC (reconocido nativamente por picotool)
+    let mut config = Config::new(0x2E8A, 0x000A);
+    config.manufacturer = Some("Raspberry Pi");
+    config.product = Some("Pico USB Console");
+    config.serial_number = Some("ECODITEC001");
+    config.max_power = 100;
+    config.max_packet_size_0 = 64;
+
+    // ── Builder con la firma correcta de embassy-usb 0.6 ──────────────────
+    //
+    // ERROR ANTERIOR: Builder::new recibía 7 args incluyendo device_descriptor.
+    // CORRECCIÓN: en 0.6 son 6 args — device_descriptor ya no se pasa,
+    // el builder lo genera internamente a partir de Config.
+    let mut builder = Builder::new(
+        driver,
+        config,
+        CONFIG_DESCRIPTOR.init([0; 256]),
+        BOS_DESCRIPTOR.init([0; 256]),
+        MSOS_DESCRIPTOR.init([0; 256]),
+        CONTROL_BUF.init([0; 64]),
+    );
+
+    let state = STATE.init(State::new());
+    let class = CdcAcmClass::new(&mut builder, state, 64);
+    let usb = builder.build();
+
+    // ── PASO 4: Lanzar tareas ─────────────────────────────────────────────
+    //
+    // CAMBIO EN embassy-executor 0.10: spawner.spawn() ya no retorna Result.
+    // Retorna () directamente — el .unwrap() causaba error E0599.
+    // La tarea devuelve Result<SpawnToken, SpawnError>, por lo que hay que
+    // usar .unwrap() en el token ANTES de pasarlo a spawn(), no después.
+    //
+    // Forma correcta en 0.10:
+    //   spawner.spawn(mi_tarea(args).unwrap())   ← unwrap en el token
+    // Forma antigua (0.6/0.7):
+    //   spawner.spawn(mi_tarea(args)).unwrap()   ← unwrap en spawn()
+    spawner.spawn(usb_task(usb).unwrap());
+    spawner.spawn(serial_task(class, panic_msg).unwrap());
+    spawner.spawn(app_task().unwrap());
+}
+
+// ─── Tarea 1: USB stack ────────────────────────────────────────────────────
+#[embassy_executor::task]
+async fn usb_task(mut usb: embassy_usb::UsbDevice<'static, Driver<'static, USB>>) {
+    usb.run().await;
+}
+
+// ─── Tarea 2: Puerto serie CDC bidireccional ───────────────────────────────
+#[embassy_executor::task]
+async fn serial_task(
+    mut class: CdcAcmClass<'static, Driver<'static, USB>>,
+    panic_msg: Option<&'static str>,
+) {
+    let mut buf = [0u8; 64];
+    let mut primer_boot = true; // enviar diagnóstico solo en la primera conexión
+
+    loop {
+        // Esperar que el host abra el puerto (miniterm, screen, cat, etc.)
+        class.wait_connection().await;
+
+        // ── Enviar mensaje de pánico del boot anterior (si existe) ─────────
+        //
+        // Se envía solo en la primera conexión del boot actual. Si el host
+        // se desconecta y reconecta, no se repite el mensaje.
+        if primer_boot {
+            primer_boot = false;
+            if let Some(msg) = panic_msg {
+                let _ = class.write_packet(b"\r\n").await;
+                let _ = class
+                    .write_packet("╔══════════════════════════════════════╗\r\n".as_bytes())
+                    .await;
+                let _ = class
+                    .write_packet("║  !! PANIC EN BOOT ANTERIOR !!       ║\r\n".as_bytes())
+                    .await;
+                let _ = class
+                    .write_packet("╚══════════════════════════════════════╝\r\n".as_bytes())
+                    .await;
+
+                // Enviar el mensaje en chunks de 64 bytes (límite del paquete CDC)
+                for chunk in msg.as_bytes().chunks(64) {
+                    let _ = class.write_packet(chunk).await;
+                }
+
+                let _ = class.write_packet(b"\r\n").await;
+                let _ = class
+                    .write_packet("════════════════════════════════════════\r\n".as_bytes())
+                    .await;
+                let _ = class
+                    .write_packet(b"Sistema operando normalmente.\r\n\r\n")
+                    .await;
+            } else {
+                // Boot limpio
+                let _ = class
+                    .write_packet(b"[Pico USB Console - boot limpio]\r\n")
+                    .await;
+            }
+        }
+
+        // ── Bucle de comunicación bidireccional ────────────────────────────
+        loop {
+            // Detección de baud 1200 → reset a BOOTSEL (para reprogramar).
+            //
+            // CAMBIO EN embassy-usb 0.6: LineCoding::data_rate es un campo
+            // privado. Hay que usar el método data_rate() con paréntesis.
+            //
+            // ERROR ANTERIOR: coding.data_rate == 1200     ← campo privado E0616
+            // CORRECCIÓN:     coding.data_rate() == 1200   ← método público
+            let coding = class.line_coding();
+            if coding.data_rate() == 1200 {
+                Timer::after(Duration::from_millis(100)).await;
+                // Reboot al modo BOOTSEL del RP2040 (ROM function)
+                // arg1: máscara GPIO para LED de actividad (0 = ninguno)
+                // arg2: interfaces USB a deshabilitar (0 = exponer todo)
+                rom_data::reset_to_usb_boot(0, 0);
+                // Esta línea nunca se ejecuta; el reset es inmediato
+            }
+
+            // Recibir datos desde el host
+            match class.read_packet(&mut buf).await {
+                Ok(n) if n > 0 => {
+                    let data = &buf[..n];
+                    // Eco inmediato al host
+                    let _ = class.write_packet(data).await;
+                    // Reenviar a app_task para procesamiento
+                    let mut msg: heapless::Vec<u8, 64> = heapless::Vec::new();
+                    let _ = msg.extend_from_slice(data);
+                    let _ = RX_CHANNEL.try_send(msg);
+                }
+                Err(_) => break, // host cerró el puerto → volver a wait_connection
+                _ => {}
+            }
+        }
+    }
+}
+
+// ─── Tarea 3: Lógica de la aplicación ─────────────────────────────────────
+// Aquí va el código real del proyecto: sensores, actuadores, protocolos, etc.
+#[embassy_executor::task]
+async fn app_task() {
+    let mut contador: u32 = 0;
+
+    loop {
+        while let Ok(msg) = RX_CHANNEL.try_receive() {
+            // Parsear comandos recibidos por USB
+            // Ejemplo: if msg.starts_with(b"LED_ON") { ... }
+            let _ = msg;
+        }
+
+        contador = contador.wrapping_add(1);
+        // Aquí: leer ADC, I2C, SPI, controlar GPIO, etc.
+        Timer::after(Duration::from_millis(500)).await;
+    }
 }

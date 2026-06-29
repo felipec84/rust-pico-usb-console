@@ -1,0 +1,138 @@
+   Compiling rust_pico_usb_console v0.1.0 (/home/fconcha/pico/rust-pico-usb-console)
+error[E0061]: this function takes 6 arguments but 7 arguments were supplied
+   --> src/main.rs:69:23
+    |
+ 69 |     let mut builder = Builder::new(
+    |                       ^^^^^^^^^^^^
+...
+ 76 |         CONTROL_BUF.init([0; 64]),
+    |         ------------------------- unexpected argument #7 of type `&'static mut [u8; 64]`
+    |
+note: associated function defined here
+   --> /home/fconcha/.cargo/git/checkouts/embassy-c08a80187403f815/a5387ad/embassy-usb/src/builder.rs:185:12
+    |
+185 |     pub fn new(
+    |            ^^^
+help: remove the extra argument
+    |
+ 75 -         MSOS_DESCRIPTOR.init([0; 256]),
+ 76 -         CONTROL_BUF.init([0; 64]),
+ 75 +         MSOS_DESCRIPTOR.init([0; 256]),
+    |
+
+error[E0308]: mismatched types
+   --> src/main.rs:85:19
+    |
+ 85 |     spawner.spawn(usb_task(usb)).unwrap();
+    |             ----- ^^^^^^^^^^^^^ expected `SpawnToken<_>`, found `Result<SpawnToken<impl Sized>, SpawnError>`
+    |             |
+    |             arguments to this method are incorrect
+...
+ 91 | #[embassy_executor::task]
+    | ------------------------- the found opaque type
+    |
+    = note: expected struct `SpawnToken<_>`
+                 found enum `core::result::Result<SpawnToken<impl Sized>, SpawnError>`
+note: method defined here
+   --> /home/fconcha/.cargo/git/checkouts/embassy-c08a80187403f815/a5387ad/embassy-executor/src/spawner.rs:162:12
+    |
+162 |     pub fn spawn<S>(&self, token: SpawnToken<S>) {
+    |            ^^^^^
+help: consider using `Result::expect` to unwrap the `core::result::Result<SpawnToken<impl Sized>, SpawnError>` value, panicking if the value is a `Result::Err`
+    |
+ 85 |     spawner.spawn(usb_task(usb).expect("REASON")).unwrap();
+    |                                +++++++++++++++++
+
+error[E0599]: no method named `unwrap` found for unit type `()` in the current scope
+  --> src/main.rs:85:34
+   |
+85 |     spawner.spawn(usb_task(usb)).unwrap();
+   |                                  ^^^^^^
+   |
+help: there is a method `unwrapped_as` with a similar name
+   |
+85 |     spawner.spawn(usb_task(usb)).unwrapped_as();
+   |                                        ++++++
+
+error[E0308]: mismatched types
+   --> src/main.rs:86:19
+    |
+ 86 |     spawner.spawn(serial_task(class, panic_msg)).unwrap();
+    |             ----- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `SpawnToken<_>`, found `Result<SpawnToken<impl Sized>, SpawnError>`
+    |             |
+    |             arguments to this method are incorrect
+...
+ 97 | #[embassy_executor::task]
+    | ------------------------- the found opaque type
+    |
+    = note: expected struct `SpawnToken<_>`
+                 found enum `core::result::Result<SpawnToken<impl Sized>, SpawnError>`
+note: method defined here
+   --> /home/fconcha/.cargo/git/checkouts/embassy-c08a80187403f815/a5387ad/embassy-executor/src/spawner.rs:162:12
+    |
+162 |     pub fn spawn<S>(&self, token: SpawnToken<S>) {
+    |            ^^^^^
+help: consider using `Result::expect` to unwrap the `core::result::Result<SpawnToken<impl Sized>, SpawnError>` value, panicking if the value is a `Result::Err`
+    |
+ 86 |     spawner.spawn(serial_task(class, panic_msg).expect("REASON")).unwrap();
+    |                                                +++++++++++++++++
+
+error[E0599]: no method named `unwrap` found for unit type `()` in the current scope
+  --> src/main.rs:86:50
+   |
+86 |     spawner.spawn(serial_task(class, panic_msg)).unwrap();
+   |                                                  ^^^^^^
+   |
+help: there is a method `unwrapped_as` with a similar name
+   |
+86 |     spawner.spawn(serial_task(class, panic_msg)).unwrapped_as();
+   |                                                        ++++++
+
+error[E0308]: mismatched types
+   --> src/main.rs:87:19
+    |
+ 87 |     spawner.spawn(app_task()).unwrap();
+    |             ----- ^^^^^^^^^^ expected `SpawnToken<_>`, found `Result<SpawnToken<impl Sized>, SpawnError>`
+    |             |
+    |             arguments to this method are incorrect
+...
+181 | #[embassy_executor::task]
+    | ------------------------- the found opaque type
+    |
+    = note: expected struct `SpawnToken<_>`
+                 found enum `core::result::Result<SpawnToken<impl Sized>, SpawnError>`
+note: method defined here
+   --> /home/fconcha/.cargo/git/checkouts/embassy-c08a80187403f815/a5387ad/embassy-executor/src/spawner.rs:162:12
+    |
+162 |     pub fn spawn<S>(&self, token: SpawnToken<S>) {
+    |            ^^^^^
+help: consider using `Result::expect` to unwrap the `core::result::Result<SpawnToken<impl Sized>, SpawnError>` value, panicking if the value is a `Result::Err`
+    |
+ 87 |     spawner.spawn(app_task().expect("REASON")).unwrap();
+    |                             +++++++++++++++++
+
+error[E0599]: no method named `unwrap` found for unit type `()` in the current scope
+  --> src/main.rs:87:31
+   |
+87 |     spawner.spawn(app_task()).unwrap();
+   |                               ^^^^^^
+   |
+help: there is a method `unwrapped_as` with a similar name
+   |
+87 |     spawner.spawn(app_task()).unwrapped_as();
+   |                                     ++++++
+
+error[E0616]: field `data_rate` of struct `LineCoding` is private
+   --> src/main.rs:155:23
+    |
+155 |             if coding.data_rate == 1200 {
+    |                       ^^^^^^^^^ private field
+    |
+help: a method `data_rate` also exists, call it with parentheses
+    |
+155 |             if coding.data_rate() == 1200 {
+    |                                ++
+
+Some errors have detailed explanations: E0061, E0308, E0599, E0616.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `rust_pico_usb_console` (bin "pico_usb_console") due to 8 previous errors

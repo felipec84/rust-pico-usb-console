@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build (release)",
+      "type": "shell",
+      "command": "cargo build --release",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Flash automático (baud-1200 → picotool)",
+      "type": "shell",
+      "command": "./flash.sh",
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Monitor USB Serial",
+      "type": "shell",
+      "command": "python3 -m serial.tools.miniterm /dev/ttyACM0 115200 --eol CRLF",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Reset manual a BOOTSEL",
+      "type": "shell",
+      "command": "stty -F /dev/ttyACM0 1200 && sleep 1 && picotool info",
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Info del firmware (picotool)",
+      "type": "shell",
+      "command": "picotool info -f 2>/dev/null || picotool info",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ]
+}
