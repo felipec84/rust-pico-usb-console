@@ -10,14 +10,33 @@ _panic_dump_start = ORIGIN(PANDUMP);
 _panic_dump_end   = ORIGIN(PANDUMP) + LENGTH(PANDUMP);
 
 SECTIONS {
+    /* ### Boot ROM info */
+    /* Goes after .vector_table, to keep it in the first 512 bytes of flash */
+    .boot_info : ALIGN(4) {
+        KEEP(*(.boot_info));
+    } > FLASH
+} INSERT AFTER .vector_table;
+
+/* Move .text to start after the boot info */
+_stext = ADDR(.boot_info) + SIZEOF(.boot_info);
+
+SECTIONS {
+    /* Ubicar la segunda etapa del bootloader al principio de la flash */
     .boot2 : {
         KEEP(*(.boot2));
     } > BOOT2
 
+    /* ### Picotool 'Binary Info' Entries */
     .bi_entries : ALIGN(4) {
         __bi_entries_start = .;
         KEEP(*(.bi_entries));
         . = ALIGN(4);
         __bi_entries_end = .;
     } > FLASH
-} INSERT BEFORE .text;
+} INSERT AFTER .text;
+
+SECTIONS {
+    .flash_end : {
+        __flash_binary_end = .;
+    } > FLASH
+} INSERT AFTER .uninit;

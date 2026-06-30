@@ -19,6 +19,16 @@ use static_cell::StaticCell;
 // con este crate — panic-persist ya incluye su propio #[panic_handler].
 use panic_persist as _;
 
+// ─── Metadata para picotool ────────────────────────────────────────────────
+#[unsafe(link_section = ".bi_entries")]
+#[cfg(target_os = "none")]
+#[used]
+pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 3] = [
+    embassy_rp::binary_info::rp_program_name!(c"Pico USB Console"),
+    embassy_rp::binary_info::rp_cargo_version!(),
+    embassy_rp::binary_info::rp_program_description!(c"USB CDC Console with Auto-Reset"),
+];
+
 // ─── Interrupciones ────────────────────────────────────────────────────────
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;

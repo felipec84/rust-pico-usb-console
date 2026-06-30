@@ -247,7 +247,7 @@ SECTIONS {
         . = ALIGN(4);
         __bi_entries_end = .;
     } > FLASH
-} INSERT BEFORE .text;
+} INSERT AFTER .text;
 ```
 
 ### `build.rs`
