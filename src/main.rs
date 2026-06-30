@@ -8,7 +8,7 @@ use embassy_rp::rom_data;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, Timer};
+use embassy_time::{Duration, Timer, with_timeout};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::{Builder, Config};
 use static_cell::StaticCell;
@@ -163,25 +163,16 @@ async fn serial_task(
         // ── Bucle de comunicación bidireccional ────────────────────────────
         loop {
             // Detección de baud 1200 → reset a BOOTSEL (para reprogramar).
-            //
-            // CAMBIO EN embassy-usb 0.6: LineCoding::data_rate es un campo
-            // privado. Hay que usar el método data_rate() con paréntesis.
-            //
-            // ERROR ANTERIOR: coding.data_rate == 1200     ← campo privado E0616
-            // CORRECCIÓN:     coding.data_rate() == 1200   ← método público
             let coding = class.line_coding();
             if coding.data_rate() == 1200 {
                 Timer::after(Duration::from_millis(100)).await;
                 // Reboot al modo BOOTSEL del RP2040 (ROM function)
-                // arg1: máscara GPIO para LED de actividad (0 = ninguno)
-                // arg2: interfaces USB a deshabilitar (0 = exponer todo)
                 rom_data::reset_to_usb_boot(0, 0);
-                // Esta línea nunca se ejecuta; el reset es inmediato
             }
 
-            // Recibir datos desde el host
-            match class.read_packet(&mut buf).await {
-                Ok(n) if n > 0 => {
+            // Recibir datos desde el host con un timeout para poder chequear el baud rate periódicamente
+            match with_timeout(Duration::from_millis(50), class.read_packet(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => {
                     let data = &buf[..n];
                     // Eco inmediato al host
                     let _ = class.write_packet(data).await;
@@ -190,8 +181,8 @@ async fn serial_task(
                     let _ = msg.extend_from_slice(data);
                     let _ = RX_CHANNEL.try_send(msg);
                 }
-                Err(_) => break, // host cerró el puerto → volver a wait_connection
-                _ => {}
+                Ok(Err(_)) => break, // host cerró el puerto → volver a wait_connection
+                _ => {}              // Timeout o paquete de tamaño 0
             }
         }
     }

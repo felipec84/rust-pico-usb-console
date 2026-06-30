@@ -10,10 +10,14 @@ _panic_dump_start = ORIGIN(PANDUMP);
 _panic_dump_end   = ORIGIN(PANDUMP) + LENGTH(PANDUMP);
 
 SECTIONS {
+    .boot2 : {
+        KEEP(*(.boot2));
+    } > BOOT2
+
     .bi_entries : ALIGN(4) {
         __bi_entries_start = .;
         KEEP(*(.bi_entries));
         . = ALIGN(4);
         __bi_entries_end = .;
     } > FLASH
-} INSERT AFTER .text;
+} INSERT BEFORE .text;

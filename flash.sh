@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reprograma la Pico sin tocar botones físicos.
-# Requiere: cargo, picotool, stty (coreutils)
+# Requiere: cargo, picotool, elf2uf2-rs, stty (coreutils)
 
 set -euo pipefail
 
@@ -12,23 +12,26 @@ echo "════════════════════════�
 echo " Pico Flash Script"
 echo "════════════════════════════════════"
 
-echo "▶ [1/4] Compilando firmware (release)..."
+echo "▶ [1/5] Compilando firmware (release)..."
 cargo build --release
 echo "   OK: $BINARY"
 
+echo "▶ [2/5] Convirtiendo a UF2 con elf2uf2-rs..."
+elf2uf2-rs "$BINARY" "${BINARY}.uf2"
+
 if [ -e "$SERIAL" ]; then
-    echo "▶ [2/4] Enviando señal de reset (baud 1200) a $SERIAL ..."
+    echo "▶ [3/5] Enviando señal de reset (baud 1200) a $SERIAL ..."
     stty -F "$SERIAL" 1200 2>/dev/null || true
     sleep 1.5
 else
-    echo "▶ [2/4] Puerto $SERIAL no encontrado — esperando BOOTSEL manual..."
+    echo "▶ [3/5] Puerto $SERIAL no encontrado — esperando BOOTSEL manual..."
     echo "   (En el primer flash: mantén BOOTSEL y conecta el USB)"
 fi
 
-echo "▶ [3/4] Esperando dispositivo en modo BOOTSEL..."
+echo "▶ [4/5] Esperando dispositivo en modo BOOTSEL..."
 FOUND=0
 for i in $(seq 1 $MAX_WAIT); do
-    if picotool info 2>/dev/null | grep -qE "RP2040|RP2350"; then
+    if picotool info >/dev/null 2>&1; then
         FOUND=1
         break
     fi
@@ -45,8 +48,8 @@ if [ $FOUND -eq 0 ]; then
     exit 1
 fi
 
-echo "▶ [4/4] Cargando firmware con picotool..."
-picotool load "$BINARY" -f -x
+echo "▶ [5/5] Cargando firmware con picotool..."
+picotool load "${BINARY}.uf2" -f -x
 echo ""
 echo "✅ Listo. La Pico está reiniciando."
 echo "   Monitor: python3 -m serial.tools.miniterm $SERIAL 115200"
