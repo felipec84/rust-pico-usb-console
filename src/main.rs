@@ -68,8 +68,18 @@ impl Handler for PicotoolResetHandler {
             // bRequest=1 → RESET_REQUEST_BOOTSEL (reboot to BOOTSEL/UF2)
             // bRequest=2 → RESET_REQUEST_FLASH   (reboot normally)
             // Ambas funciones no retornan: reinician el chip de inmediato.
+            //
+            // disable_interface_mask=1 en el reboot pedido por picotool: deshabilita
+            // la interfaz de almacenamiento masivo (RPI-RP2) en BOOTSEL, dejando solo
+            // PICOBOOT. `picotool info -f` siempre manda wValue=0 (no pide esto por
+            // su cuenta), así que si dejamos ambas interfaces habilitadas, el SO monta
+            // el drive RPI-RP2 (udev/gvfs) y ese automount retrasa la re-enumeración
+            // más allá de los ~6s que picotool espera (5 reintentos x 1.2s) antes de
+            // rendirse — el reboot funciona, pero picotool ya dejó de buscar.
+            // PICOBOOT es lo único que picotool necesita, así que deshabilitar MSD
+            // aquí es seguro y evita la carrera.
             if req.request == 1 {
-                rom_data::reset_to_usb_boot(0, 0);
+                rom_data::reset_to_usb_boot(0, 1);
             } else if req.request == 2 {
                 cortex_m::peripheral::SCB::sys_reset();
             }
