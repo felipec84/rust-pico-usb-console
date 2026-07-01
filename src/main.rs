@@ -10,7 +10,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
+use embassy_usb::control::{OutResponse, Recipient, Request};
 use embassy_usb::types::InterfaceNumber;
 use embassy_usb::{Builder, Config, Handler};
 use static_cell::StaticCell;
@@ -41,38 +41,39 @@ static RX_CHANNEL: Channel<ThreadModeRawMutex, heapless::Vec<u8, 64>, 4> = Chann
 
 // ─── Handler de reset para picotool (-f / --force) ────────────────────────
 //
-// picotool espera una interfaz USB vendor (class=0xFF subclass=0x00 proto=0x01)
-// y envía una solicitud de control vendor con bRequest=1 para rebootear al
-// modo BOOTSEL. Sin esta interfaz, `picotool info -f` falla con
-// "Unable to locate reset interface on the device".
+// picotool busca una interfaz USB con class=0xFF subclass=0x00 proto=0x01 y,
+// para rebootear, envía una petición de control con:
+//   bmRequestType = CLASS | INTERFACE   (NO vendor — ver picotool main.cpp)
+//   bRequest      = 1 (RESET_REQUEST_BOOTSEL) ó 2 (RESET_REQUEST_FLASH)
+//   wIndex        = número de la interfaz de reset
+//
+// El driver de referencia de la pico-sdk (reset_interface.c) NO comprueba el
+// tipo de la petición: solo mira wIndex y bRequest. Por eso aquí basta con
+// verificar el recipient (Interface) y el índice, sin exigir un tipo concreto
+// — así funciona tanto si picotool la envía como CLASS como VENDOR.
 struct PicotoolResetHandler {
     if_num: InterfaceNumber,
 }
 
+impl PicotoolResetHandler {
+    // ¿Esta petición va dirigida a nuestra interfaz de reset?
+    fn is_for_us(&self, req: &Request) -> bool {
+        req.recipient == Recipient::Interface && req.index == u8::from(self.if_num) as u16
+    }
+}
+
 impl Handler for PicotoolResetHandler {
     fn control_out(&mut self, req: Request, _data: &[u8]) -> Option<OutResponse> {
-        if req.request_type == RequestType::Vendor
-            && req.recipient == Recipient::Interface
-            && req.index == u8::from(self.if_num) as u16
-        {
+        if self.is_for_us(&req) {
             // bRequest=1 → RESET_REQUEST_BOOTSEL (reboot to BOOTSEL/UF2)
             // bRequest=2 → RESET_REQUEST_FLASH   (reboot normally)
+            // Ambas funciones no retornan: reinician el chip de inmediato.
             if req.request == 1 {
                 rom_data::reset_to_usb_boot(0, 0);
             } else if req.request == 2 {
                 cortex_m::peripheral::SCB::sys_reset();
             }
             return Some(OutResponse::Accepted);
-        }
-        None
-    }
-
-    fn control_in<'a>(&'a mut self, req: Request, _buf: &'a mut [u8]) -> Option<InResponse<'a>> {
-        if req.request_type == RequestType::Vendor
-            && req.recipient == Recipient::Interface
-            && req.index == u8::from(self.if_num) as u16
-        {
-            return Some(InResponse::Rejected);
         }
         None
     }
