@@ -3,6 +3,7 @@
 
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
+use embassy_rp::flash::{Blocking, Flash};
 use embassy_rp::peripherals::USB;
 use embassy_rp::rom_data;
 use embassy_rp::usb::{Driver, InterruptHandler};
@@ -91,6 +92,28 @@ impl Handler for PicotoolResetHandler {
 
 static RESET_HANDLER: StaticCell<PicotoolResetHandler> = StaticCell::new();
 
+// Tamaño físico de la flash (Winbond/QSPI en la Pico), no el tamaño usado
+// por el linker en memory.x — necesario para el driver Flash de embassy-rp.
+const FLASH_SIZE: usize = 2 * 1024 * 1024;
+
+// picotool identifica, en modo BOOTSEL, al RP2040 por su ID único de flash
+// (picoboot_connection.c: para RP2040 compara el flash ID vía PICOBOOT, NO
+// el string de serie USB). Para que `picotool -f` pueda re-encontrar el
+// dispositivo tras el reboot, el serial USB en modo normal debe ser ese
+// mismo ID en hex (igual que hace pico-sdk con pico_get_unique_board_id()).
+// Un serial arbitrario como "ECODITEC001" hace que picotool nunca reconozca
+// el dispositivo reiniciado y agote sus reintentos, aunque el reboot en sí
+// funcione.
+static SERIAL_BUF: StaticCell<[u8; 16]> = StaticCell::new();
+
+fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for (i, b) in bytes.iter().enumerate() {
+        out[i * 2] = HEX[(b >> 4) as usize];
+        out[i * 2 + 1] = HEX[(b & 0xf) as usize];
+    }
+}
+
 // ─── Buffers estáticos para embassy-usb (StaticCell = sin unsafe) ──────────
 //
 // CAMBIO EN embassy-usb 0.6: Builder::new ya NO recibe device_descriptor.
@@ -126,10 +149,21 @@ async fn main(spawner: Spawner) {
     // ── PASO 3: Configurar USB ─────────────────────────────────────────────
     // VID 0x2E8A = Raspberry Pi
     // PID 0x000A = Pico con USB-CDC (reconocido nativamente por picotool)
+    //
+    // El serial USB reportado en modo normal debe ser el ID único de la
+    // flash en hex (ver comentario junto a SERIAL_BUF) para que picotool -f
+    // pueda re-encontrar el dispositivo tras el reboot a BOOTSEL.
+    let mut flash: Flash<'_, _, Blocking, FLASH_SIZE> = Flash::new_blocking(p.FLASH);
+    let mut uid = [0u8; 8];
+    flash.blocking_unique_id(&mut uid).unwrap();
+    let serial_bytes = SERIAL_BUF.init([0u8; 16]);
+    hex_encode_upper(&uid, serial_bytes);
+    let serial_str: &'static str = core::str::from_utf8(serial_bytes).unwrap();
+
     let mut config = Config::new(0x2E8A, 0x000A);
     config.manufacturer = Some("Raspberry Pi");
     config.product = Some("Pico USB Console");
-    config.serial_number = Some("ECODITEC001");
+    config.serial_number = Some(serial_str);
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
