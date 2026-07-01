@@ -8,8 +8,10 @@ logic in one place and go.
 
 ## What's included
 
-- **USB-CDC serial console** — bidirectional, echoes input, forwards received
-  bytes to `app_task` via a channel for command parsing.
+- **USB-CDC interactive console** — line-buffered input with backspace
+  support, dispatches full command lines to `app_task` over an
+  `embassy_sync::channel::Channel` (and gets responses back over a second
+  channel) — see [Built-in console commands](#built-in-console-commands).
 - **Crash reporting via `panic-persist`** — on panic, the message is saved to
   a small RAM region (`PANDUMP`, see `memory.x`) and the chip soft-resets.
   The message is replayed over USB-CDC on the next boot, so you can see why
@@ -58,11 +60,46 @@ Serial monitor: `python3 -m serial.tools.miniterm /dev/ttyACM0 115200`.
 3. Leave `config.serial_number` alone — it's derived from the flash's unique
    ID at boot (see below), not something to hardcode.
 4. Write your actual logic in `app_task()` (`src/main.rs`). It already
-   receives parsed bytes from the console via `RX_CHANNEL`; add GPIO/I2C/SPI/
-   ADC peripherals to its signature as needed.
+   receives full command lines from the console via `RX_CHANNEL` and answers
+   through `TX_CHANNEL`; add your own commands to its `match`, and add
+   GPIO/I2C/SPI/ADC peripherals to its signature as needed (own them in
+   `main()` and pass them in, same pattern as the ADC/watchdog below).
 5. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.
+
+## Built-in console commands
+
+Connect with a serial monitor (`python3 -m serial.tools.miniterm /dev/ttyACM0
+115200`) and type a command followed by Enter:
+
+| Command | What it does |
+|---|---|
+| `help` | Lists the available commands |
+| `info` | Program name/version, flash unique ID (hex), and last reset reason |
+| `temp` | Reads the RP2040's internal temperature sensor via the ADC (async, RP2040 datasheet §4.9.5 calibration formula) |
+| `uptime` | Milliseconds since boot |
+| `bootsel` | Reboots into BOOTSEL mode (same `rom_data::reset_to_usb_boot` call used by the 1200-baud trick) |
+
+These exist to demonstrate reading real chip info and dispatching commands
+over embassy channels — replace them with your own commands in `app_task`'s
+`match` when using this as a template. Three honest limitations worth knowing:
+
+- No ANSI escape handling (arrow keys etc. type garbage into the line, use
+  plain typing + backspace).
+- The reset-reason reported by `info` can't distinguish a power-on reset
+  from our own software resets (panic-persist, `SCB::sys_reset()`) — the
+  RP2040's watchdog register only records watchdog-triggered resets.
+- **The very first command typed right after the boot banner can
+  occasionally come back "unknown command"** even when typed correctly — in
+  hardware testing, the first post-banner read sometimes picks up leftover
+  fragments of the banner text as a prefix. This is a one-time, first-line-
+  only quirk in the interaction between the boot banner's `write_packet`
+  calls and the CDC-ACM `read_packet` call that follows (still unresolved —
+  suspected embassy-rp/RP2040 USB driver interaction, not a bug in the
+  command parsing itself). Every subsequent command, and every reconnect,
+  has been 100% reliable across extensive testing. If your first command
+  after connecting looks wrong, just retype it.
 
 ## `picotool -f` — how it works (and why it's finicky)
 

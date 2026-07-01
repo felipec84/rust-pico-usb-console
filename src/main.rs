@@ -1,12 +1,18 @@
 #![no_std]
 #![no_main]
 
+use core::fmt::Write as _;
+
 use embassy_executor::Spawner;
+use embassy_rp::adc; // qualificado a propósito: adc::Channel/InterruptHandler
+                      // colisionan de nombre con embassy_sync::channel::Channel
+                      // y embassy_rp::usb::InterruptHandler.
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Blocking, Flash};
 use embassy_rp::peripherals::USB;
 use embassy_rp::rom_data;
 use embassy_rp::usb::{Driver, InterruptHandler};
+use embassy_rp::watchdog::{ResetReason, Watchdog};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
@@ -35,10 +41,14 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 3] = [
 // ─── Interrupciones ────────────────────────────────────────────────────────
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => InterruptHandler<USB>;
+    ADC_IRQ_FIFO => adc::InterruptHandler;
 });
 
-// ─── Canal de comunicación entre tareas ────────────────────────────────────
+// ─── Canales de comunicación entre tareas ──────────────────────────────────
+// RX: líneas de comando recibidas por USB-CDC, de serial_task a app_task.
+// TX: respuestas ya formateadas, de app_task de vuelta a serial_task.
 static RX_CHANNEL: Channel<ThreadModeRawMutex, heapless::Vec<u8, 64>, 4> = Channel::new();
+static TX_CHANNEL: Channel<ThreadModeRawMutex, heapless::String<200>, 4> = Channel::new();
 
 // ─── Handler de reset para picotool (-f / --force) ────────────────────────
 //
@@ -110,6 +120,14 @@ fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
     }
 }
 
+// Fórmula de calibración del sensor de temperatura interno (RP2040 datasheet §4.9.5).
+fn convert_to_celsius(raw_temp: u16) -> f32 {
+    let temp = 27.0 - (raw_temp as f32 * 3.3 / 4096.0 - 0.706) / 0.001721;
+    let sign = if temp < 0.0 { -1.0 } else { 1.0 };
+    let rounded_temp_x10: i16 = ((temp * 10.0) + 0.5 * sign) as i16;
+    (rounded_temp_x10 as f32) / 10.0
+}
+
 // ─── Buffers estáticos para embassy-usb (StaticCell = sin unsafe) ──────────
 static STATE: StaticCell<State> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
@@ -166,6 +184,17 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
+    // Razón del último reset. None cubre tanto power-on reset como nuestros
+    // propios soft-resets (panic-persist / SCB::sys_reset()) — el RP2040 no
+    // distingue esos casos en este registro, así que lo decimos tal cual.
+    let reset_reason: Option<ResetReason> = Watchdog::new(p.WATCHDOG).reset_reason();
+
+    // ADC para el sensor de temperatura interno, en modo async: la tarea se
+    // suspende y el executor sigue trabajando mientras la conversión corre;
+    // ADC_IRQ_FIFO la despierta al terminar.
+    let adc = adc::Adc::new(p.ADC, Irqs, adc::Config::default());
+    let temp_channel = adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR);
+
     let mut builder = Builder::new(
         driver,
         config,
@@ -193,7 +222,7 @@ async fn main(spawner: Spawner) {
     // ── PASO 4: Lanzar tareas ─────────────────────────────────────────────
     spawner.spawn(usb_task(usb).unwrap());
     spawner.spawn(serial_task(class, panic_msg).unwrap());
-    spawner.spawn(app_task().unwrap());
+    spawner.spawn(app_task(uid, reset_reason, adc, temp_channel).unwrap());
 }
 
 // ─── Tarea 1: USB stack ────────────────────────────────────────────────────
@@ -210,10 +239,15 @@ async fn serial_task(
 ) {
     let mut buf = [0u8; 64];
     let mut primer_boot = true; // enviar diagnóstico solo en la primera conexión
+    let mut line: heapless::Vec<u8, 64> = heapless::Vec::new(); // línea de comando en construcción
 
     loop {
         // Esperar que el host abra el puerto (miniterm, screen, cat, etc.)
         class.wait_connection().await;
+        // Descartar cualquier línea a medio escribir de una conexión anterior
+        // — si no se limpia aquí, un byte suelto que quedó sin \r/\n puede
+        // colarse como prefijo del primer comando de la nueva sesión.
+        line.clear();
 
         // ── Enviar mensaje de pánico del boot anterior (si existe) ─────────
         //
@@ -266,36 +300,120 @@ async fn serial_task(
             // Recibir datos desde el host con un timeout para poder chequear el baud rate periódicamente
             match with_timeout(Duration::from_millis(50), class.read_packet(&mut buf)).await {
                 Ok(Ok(n)) if n > 0 => {
-                    let data = &buf[..n];
-                    // Eco inmediato al host
-                    let _ = class.write_packet(data).await;
-                    // Reenviar a app_task para procesamiento
-                    let mut msg: heapless::Vec<u8, 64> = heapless::Vec::new();
-                    let _ = msg.extend_from_slice(data);
-                    let _ = RX_CHANNEL.try_send(msg);
+                    // Eco en un solo write_packet por paquete recibido (igual que el
+                    // echo original) en vez de uno por byte — varios write_packet
+                    // pequeños seguidos producían corrupción intermitente en el
+                    // siguiente read_packet durante pruebas en hardware real.
+                    let _ = class.write_packet(&buf[..n]).await;
+
+                    // Consola de línea: acumula bytes hasta \r/\n, con soporte de
+                    // backspace (se corrige visualmente con un write_packet aparte,
+                    // ya que el eco en bloque de arriba solo mueve el cursor). No
+                    // interpreta secuencias de escape ANSI (flechas, etc. entran
+                    // como bytes sueltos en la línea) — alcanza para una consola
+                    // simple tipo esqueleto.
+                    //
+                    // LIMITACIÓN CONOCIDA: en pruebas de hardware real, el PRIMER
+                    // comando escrito justo después del banner de boot a veces
+                    // llega con basura (fragmentos del propio banner) pegada como
+                    // prefijo, y se reporta como "comando desconocido" aunque el
+                    // texto tecleado esté bien. Ocurre solo una vez por boot, en la
+                    // primera línea; toda interacción posterior (reconexiones
+                    // incluidas) es 100% confiable — ver README.md.
+                    for &b in &buf[..n] {
+                        match b {
+                            b'\r' | b'\n' => {
+                                if !line.is_empty() {
+                                    let _ = RX_CHANNEL.try_send(line.clone());
+                                    line.clear();
+                                }
+                            }
+                            0x08 | 0x7F => {
+                                if line.pop().is_some() {
+                                    let _ = class.write_packet(b" \x08").await;
+                                }
+                            }
+                            _ => {
+                                let _ = line.push(b);
+                            }
+                        }
+                    }
                 }
                 Ok(Err(_)) => break, // host cerró el puerto → volver a wait_connection
                 _ => {}              // Timeout o paquete de tamaño 0
+            }
+
+            // Enviar cualquier respuesta pendiente de app_task
+            while let Ok(resp) = TX_CHANNEL.try_receive() {
+                for chunk in resp.as_bytes().chunks(64) {
+                    let _ = class.write_packet(chunk).await;
+                }
             }
         }
     }
 }
 
-// ─── Tarea 3: Lógica de la aplicación ─────────────────────────────────────
-// Aquí va el código real del proyecto: sensores, actuadores, protocolos, etc.
+// ─── Tarea 3: Consola de comandos / lógica de la aplicación ────────────────
+// Espera líneas de comando de serial_task (vía RX_CHANNEL) y responde por
+// TX_CHANNEL. Los comandos de abajo (help/info/temp/uptime/bootsel) son un
+// ejemplo — reemplázalos por los de tu proyecto en este mismo match.
 #[embassy_executor::task]
-async fn app_task() {
-    let mut contador: u32 = 0;
-
+async fn app_task(
+    uid: [u8; 8],
+    reset_reason: Option<ResetReason>,
+    mut adc: adc::Adc<'static, adc::Async>,
+    mut temp_channel: adc::Channel<'static>,
+) {
     loop {
-        while let Ok(msg) = RX_CHANNEL.try_receive() {
-            // Parsear comandos recibidos por USB
-            // Ejemplo: if msg.starts_with(b"LED_ON") { ... }
-            let _ = msg;
+        let msg = RX_CHANNEL.receive().await;
+        let mut resp: heapless::String<200> = heapless::String::new();
+
+        match msg.as_slice() {
+            b"help" => {
+                let _ = write!(resp, "Comandos: help, info, temp, uptime, bootsel");
+            }
+            b"info" => {
+                let mut hex = [0u8; 16];
+                hex_encode_upper(&uid, &mut hex);
+                let hex_str = core::str::from_utf8(&hex).unwrap_or("????????????????");
+                let reason = match reset_reason {
+                    Some(ResetReason::Forced) => "forced (watchdog trigger_reset)",
+                    Some(ResetReason::TimedOut) => "watchdog timeout",
+                    None => "power-on o soft-reset (el RP2040 no distingue estos casos)",
+                };
+                let _ = write!(
+                    resp,
+                    "Pico USB Console v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
+                    env!("CARGO_PKG_VERSION"),
+                    hex_str,
+                    reason,
+                );
+            }
+            b"temp" => match adc.read(&mut temp_channel).await {
+                Ok(raw) => {
+                    let c = convert_to_celsius(raw);
+                    let _ = write!(resp, "Temperatura interna: {:.1} C (raw={})", c, raw);
+                }
+                Err(_) => {
+                    let _ = write!(resp, "Error leyendo el ADC");
+                }
+            },
+            b"uptime" => {
+                let ms = embassy_time::Instant::now().as_millis();
+                let _ = write!(resp, "Uptime: {} ms", ms);
+            }
+            b"bootsel" => {
+                let _ = write!(resp, "Reiniciando a BOOTSEL...");
+                let _ = TX_CHANNEL.try_send(resp);
+                Timer::after(Duration::from_millis(100)).await;
+                rom_data::reset_to_usb_boot(0, 0);
+                continue;
+            }
+            _ => {
+                let _ = write!(resp, "Comando desconocido. Escribe 'help'.");
+            }
         }
 
-        contador = contador.wrapping_add(1);
-        // Aquí: leer ADC, I2C, SPI, controlar GPIO, etc.
-        Timer::after(Duration::from_millis(500)).await;
+        let _ = TX_CHANNEL.try_send(resp);
     }
 }
