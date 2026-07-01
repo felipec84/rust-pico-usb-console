@@ -10,7 +10,9 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer, with_timeout};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
-use embassy_usb::{Builder, Config};
+use embassy_usb::control::{InResponse, OutResponse, Recipient, Request, RequestType};
+use embassy_usb::types::InterfaceNumber;
+use embassy_usb::{Builder, Config, Handler};
 use static_cell::StaticCell;
 
 // panic-persist: en caso de pánico, escribe el mensaje en la zona PANDUMP
@@ -36,6 +38,47 @@ bind_interrupts!(struct Irqs {
 
 // ─── Canal de comunicación entre tareas ────────────────────────────────────
 static RX_CHANNEL: Channel<ThreadModeRawMutex, heapless::Vec<u8, 64>, 4> = Channel::new();
+
+// ─── Handler de reset para picotool (-f / --force) ────────────────────────
+//
+// picotool espera una interfaz USB vendor (class=0xFF subclass=0x00 proto=0x01)
+// y envía una solicitud de control vendor con bRequest=1 para rebootear al
+// modo BOOTSEL. Sin esta interfaz, `picotool info -f` falla con
+// "Unable to locate reset interface on the device".
+struct PicotoolResetHandler {
+    if_num: InterfaceNumber,
+}
+
+impl Handler for PicotoolResetHandler {
+    fn control_out(&mut self, req: Request, _data: &[u8]) -> Option<OutResponse> {
+        if req.request_type == RequestType::Vendor
+            && req.recipient == Recipient::Interface
+            && req.index == u8::from(self.if_num) as u16
+        {
+            // bRequest=1 → RESET_REQUEST_BOOTSEL (reboot to BOOTSEL/UF2)
+            // bRequest=2 → RESET_REQUEST_FLASH   (reboot normally)
+            if req.request == 1 {
+                rom_data::reset_to_usb_boot(0, 0);
+            } else if req.request == 2 {
+                cortex_m::peripheral::SCB::sys_reset();
+            }
+            return Some(OutResponse::Accepted);
+        }
+        None
+    }
+
+    fn control_in<'a>(&'a mut self, req: Request, _buf: &'a mut [u8]) -> Option<InResponse<'a>> {
+        if req.request_type == RequestType::Vendor
+            && req.recipient == Recipient::Interface
+            && req.index == u8::from(self.if_num) as u16
+        {
+            return Some(InResponse::Rejected);
+        }
+        None
+    }
+}
+
+static RESET_HANDLER: StaticCell<PicotoolResetHandler> = StaticCell::new();
 
 // ─── Buffers estáticos para embassy-usb (StaticCell = sin unsafe) ──────────
 //
@@ -92,6 +135,17 @@ async fn main(spawner: Spawner) {
         MSOS_DESCRIPTOR.init([0; 256]),
         CONTROL_BUF.init([0; 64]),
     );
+
+    // ── Interfaz de reset para picotool -f ────────────────────────────────
+    // Vendor class 0xFF / subclass 0x00 / protocol 0x01 — mismo que el SDK de C.
+    let reset_if = {
+        let mut func = builder.function(0xFF, 0x00, 0x01);
+        let mut iface = func.interface();
+        let _alt = iface.alt_setting(0xFF, 0x00, 0x01, None);
+        iface.interface_number()
+    };
+    let reset_handler = RESET_HANDLER.init(PicotoolResetHandler { if_num: reset_if });
+    builder.handler(reset_handler);
 
     let state = STATE.init(State::new());
     let class = CdcAcmClass::new(&mut builder, state, 64);
