@@ -305,10 +305,13 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
 
     // 3. Configurar USB (VID:PID 2E8A:000A oficial de Raspberry Pi para CDC)
+    //
+    // NOTA: el serial debe ser el ID único de flash en hex, no un string fijo
+    // — ver README.md, sección "picotool -f", para el porqué y el código real.
     let mut config = Config::new(0x2E8A, 0x000A);
     config.manufacturer = Some("Raspberry Pi");
     config.product = Some("Pico USB Console");
-    config.serial_number = Some("ECODITEC001");
+    config.serial_number = Some(serial_str); // ver README.md
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 

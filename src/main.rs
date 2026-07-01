@@ -70,15 +70,11 @@ impl Handler for PicotoolResetHandler {
             // bRequest=2 → RESET_REQUEST_FLASH   (reboot normally)
             // Ambas funciones no retornan: reinician el chip de inmediato.
             //
-            // disable_interface_mask=1 en el reboot pedido por picotool: deshabilita
-            // la interfaz de almacenamiento masivo (RPI-RP2) en BOOTSEL, dejando solo
-            // PICOBOOT. `picotool info -f` siempre manda wValue=0 (no pide esto por
-            // su cuenta), así que si dejamos ambas interfaces habilitadas, el SO monta
-            // el drive RPI-RP2 (udev/gvfs) y ese automount retrasa la re-enumeración
-            // más allá de los ~6s que picotool espera (5 reintentos x 1.2s) antes de
-            // rendirse — el reboot funciona, pero picotool ya dejó de buscar.
-            // PICOBOOT es lo único que picotool necesita, así que deshabilitar MSD
-            // aquí es seguro y evita la carrera.
+            // disable_interface_mask=1: deshabilita la interfaz de almacenamiento
+            // masivo (RPI-RP2) en BOOTSEL, dejando solo PICOBOOT — que es lo único
+            // que picotool usa. Con ambas interfaces habilitadas, el SO monta el
+            // drive RPI-RP2 y ese automount puede retrasar la re-enumeración lo
+            // suficiente como para que picotool agote sus reintentos.
             if req.request == 1 {
                 rom_data::reset_to_usb_boot(0, 1);
             } else if req.request == 2 {
@@ -115,10 +111,6 @@ fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
 }
 
 // ─── Buffers estáticos para embassy-usb (StaticCell = sin unsafe) ──────────
-//
-// CAMBIO EN embassy-usb 0.6: Builder::new ya NO recibe device_descriptor.
-// Lo genera internamente. Solo se necesitan estos 4 buffers:
-//   config_descriptor, bos_descriptor, msos_descriptor, control_buf
 static STATE: StaticCell<State> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
@@ -147,12 +139,19 @@ async fn main(spawner: Spawner) {
     let driver = Driver::new(p.USB, Irqs);
 
     // ── PASO 3: Configurar USB ─────────────────────────────────────────────
-    // VID 0x2E8A = Raspberry Pi
-    // PID 0x000A = Pico con USB-CDC (reconocido nativamente por picotool)
+    //
+    // ┌── CUSTOMIZE PER PROJECT ─────────────────────────────────────────┐
+    // │ VID/PID, manufacturer y product van aquí. VID 0x2E8A/PID 0x000A  │
+    // │ son los valores que Raspberry Pi reserva para una Pico con       │
+    // │ USB-CDC "genérica" — picotool los reconoce sin flags extra.      │
+    // │ Para un producto propio, usa tu propio VID/PID (o al menos       │
+    // │ cambia manufacturer/product) para no confundirte con otra Pico.  │
+    // └────────────────────────────────────────────────────────────────┘
     //
     // El serial USB reportado en modo normal debe ser el ID único de la
     // flash en hex (ver comentario junto a SERIAL_BUF) para que picotool -f
-    // pueda re-encontrar el dispositivo tras el reboot a BOOTSEL.
+    // pueda re-encontrar el dispositivo tras el reboot a BOOTSEL. No lo
+    // reemplaces por un string fijo.
     let mut flash: Flash<'_, _, Blocking, FLASH_SIZE> = Flash::new_blocking(p.FLASH);
     let mut uid = [0u8; 8];
     flash.blocking_unique_id(&mut uid).unwrap();
@@ -167,11 +166,6 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
-    // ── Builder con la firma correcta de embassy-usb 0.6 ──────────────────
-    //
-    // ERROR ANTERIOR: Builder::new recibía 7 args incluyendo device_descriptor.
-    // CORRECCIÓN: en 0.6 son 6 args — device_descriptor ya no se pasa,
-    // el builder lo genera internamente a partir de Config.
     let mut builder = Builder::new(
         driver,
         config,
@@ -197,16 +191,6 @@ async fn main(spawner: Spawner) {
     let usb = builder.build();
 
     // ── PASO 4: Lanzar tareas ─────────────────────────────────────────────
-    //
-    // CAMBIO EN embassy-executor 0.10: spawner.spawn() ya no retorna Result.
-    // Retorna () directamente — el .unwrap() causaba error E0599.
-    // La tarea devuelve Result<SpawnToken, SpawnError>, por lo que hay que
-    // usar .unwrap() en el token ANTES de pasarlo a spawn(), no después.
-    //
-    // Forma correcta en 0.10:
-    //   spawner.spawn(mi_tarea(args).unwrap())   ← unwrap en el token
-    // Forma antigua (0.6/0.7):
-    //   spawner.spawn(mi_tarea(args)).unwrap()   ← unwrap en spawn()
     spawner.spawn(usb_task(usb).unwrap());
     spawner.spawn(serial_task(class, panic_msg).unwrap());
     spawner.spawn(app_task().unwrap());
