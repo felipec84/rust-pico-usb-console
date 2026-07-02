@@ -51,20 +51,48 @@ Serial monitor: `python3 -m serial.tools.miniterm /dev/ttyACM0 115200`.
 
 ## Using this as a template for a new project
 
-1. Rename the package/binary in `Cargo.toml` (`[package] name`, `[[bin]] name`).
-2. In `src/main.rs`, find the `CUSTOMIZE PER PROJECT` block in `main()` and
-   set your own USB VID/PID, manufacturer, and product strings. The defaults
-   (`0x2E8A`/`0x000A`, "Raspberry Pi") are the stock values Pico boards use
-   for USB-CDC and work fine for development, but you'll want your own
-   identity for anything you ship.
-3. Leave `config.serial_number` alone — it's derived from the flash's unique
+This repo is maintained on two branches:
+
+- **`master` — the cargo-generate template.** It carries liquid
+  placeholders (`project-name`, `crate_name`, etc. in double curly braces)
+  plus a `cargo-generate.toml`, so it does **not** build directly; it
+  exists to be consumed by `cargo generate`.
+- **`develop` — the buildable reference.** Real names, flashable with
+  `./flash.sh`. All generic improvements happen (and get hardware-verified)
+  here. To update the template afterwards:
+  `git checkout master && git merge develop && git checkout develop`.
+  **Never commit directly to `master`** — keeping the placeholder lines
+  untouched on `develop` is what keeps these merges conflict-free.
+
+To start a new project from the template:
+
+```bash
+cargo install cargo-generate   # once
+
+# from GitHub:
+cargo generate --git git@github.com:felipec84/rust-pico-usb-console.git --name my-project
+
+# or from this local checkout (--branch master matters: a local clone would
+# otherwise use whatever branch happens to be checked out here):
+cargo generate --git ~/Desarrollos/pico_proyects/rust-pico-usb-console --branch master --name my-project
+```
+
+cargo-generate prompts for the USB product/manufacturer strings (defaults
+are the stock Pico values) and substitutes the project name into
+`Cargo.toml` and `flash.sh`. Then, in the generated project:
+
+1. If you ship this commercially, set your own USB VID/PID in the
+   `CUSTOMIZE PER PROJECT` block in `main()`. The defaults
+   (`0x2E8A`/`0x000A`) are the stock Raspberry Pi values for a USB-CDC Pico
+   and work fine for development.
+2. Leave `config.serial_number` alone — it's derived from the flash's unique
    ID at boot (see below), not something to hardcode.
-4. Write your actual logic in `app_task()` (`src/main.rs`). It already
+3. Write your actual logic in `app_task()` (`src/main.rs`). It already
    receives full command lines from the console via `RX_CHANNEL` and answers
    through `TX_CHANNEL`; add your own commands to its `match`, and add
    GPIO/I2C/SPI/ADC peripherals to its signature as needed (own them in
    `main()` and pass them in, same pattern as the ADC/watchdog below).
-5. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
+4. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.
 
