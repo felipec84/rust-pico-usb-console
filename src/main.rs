@@ -388,11 +388,14 @@ async fn serial_task(
                 _ => {}              // Timeout o paquete de tamaño 0
             }
 
-            // Enviar cualquier respuesta pendiente de app_task
+            // Enviar cualquier respuesta pendiente de app_task, terminada en
+            // \r\n para que el eco del siguiente comando empiece en línea nueva
+            // (las respuestas en app_task no llevan salto de línea final).
             while let Ok(resp) = TX_CHANNEL.try_receive() {
                 for chunk in resp.as_bytes().chunks(64) {
                     let _ = class.write_packet(chunk).await;
                 }
+                let _ = class.write_packet(b"\r\n").await;
             }
         }
     }
