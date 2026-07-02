@@ -9,7 +9,12 @@ cargo_generate_version = ">=0.10.0"
 
 [placeholders.product-name]
 type = "string"
-prompt = "USB product string (aparece en lsusb/picotool y en el banner de la consola — corto)"
+prompt = "USB product string (aparece en lsusb/picotool y en el banner — máx 40 caracteres)"
+# Máx 40: el banner "[<nombre> - escribe 'help']\r\n" debe caber en un
+# paquete CDC de 64 bytes. El firmware además lo verifica en compilación
+# (const asserts en main.rs), así que un nombre largo no compila en vez
+# de romper la enumeración USB.
+regex = "^.{1,40}$"
 default = "Pico USB Console"
 
 [placeholders.manufacturer]
