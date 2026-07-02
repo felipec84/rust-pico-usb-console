@@ -28,6 +28,27 @@ use static_cell::StaticCell;
 // con este crate — panic-persist ya incluye su propio #[panic_handler].
 use panic_persist as _;
 
+// ─── Identidad del producto ────────────────────────────────────────────────
+// CUSTOMIZE PER PROJECT: nombre visible en lsusb/picotool y en el banner.
+// Los asserts se evalúan EN COMPILACIÓN — un nombre demasiado largo aquí no
+// compila, en vez de hacer que embassy-usb entre en pánico serializando el
+// string descriptor durante la enumeración (síntoma: la Pico se resetea en
+// bucle y el host registra "can't set config #1, error -32").
+const PRODUCT_NAME: &str = "{{product-name}}";
+const BANNER: &[u8] = b"[{{product-name}} - escribe 'help']\r\n";
+
+// Límite del spec USB: bLength del string descriptor es un u8 → máximo
+// 126 unidades UTF-16. Con nombres ASCII, bytes == unidades.
+const _: () = assert!(
+    PRODUCT_NAME.len() <= 126,
+    "PRODUCT_NAME excede los 126 caracteres del string descriptor USB"
+);
+// write_packet envía UN paquete CDC: máximo 64 bytes o el banner no sale.
+const _: () = assert!(
+    BANNER.len() <= 64,
+    "El banner no cabe en un paquete CDC de 64 bytes — acorta el nombre"
+);
+
 // ─── Metadata para picotool ────────────────────────────────────────────────
 #[unsafe(link_section = ".bi_entries")]
 #[cfg(target_os = "none")]
@@ -133,7 +154,12 @@ static STATE: StaticCell<State> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static MSOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+// CONTROL_BUF: 256 y no 64. Los string descriptors (manufacturer/product/
+// serial) se serializan a UTF-16 dentro de este buffer; embassy-usb hace
+// assert de que caben, así que con 64 bytes un product de más de 30
+// caracteres provoca pánico en plena enumeración (reboot-loop, el host
+// nunca logra configurar el dispositivo). 256 cubre el máximo del spec.
+static CONTROL_BUF: StaticCell<[u8; 256]> = StaticCell::new();
 
 // ─── Punto de entrada ──────────────────────────────────────────────────────
 #[embassy_executor::main]
@@ -179,7 +205,7 @@ async fn main(spawner: Spawner) {
 
     let mut config = Config::new(0x2E8A, 0x000A);
     config.manufacturer = Some("{{manufacturer}}");
-    config.product = Some("{{product-name}}");
+    config.product = Some(PRODUCT_NAME);
     config.serial_number = Some(serial_str);
     config.max_power = 100;
     config.max_packet_size_0 = 64;
@@ -201,7 +227,7 @@ async fn main(spawner: Spawner) {
         CONFIG_DESCRIPTOR.init([0; 256]),
         BOS_DESCRIPTOR.init([0; 256]),
         MSOS_DESCRIPTOR.init([0; 256]),
-        CONTROL_BUF.init([0; 64]),
+        CONTROL_BUF.init([0; 256]),
     );
 
     // ── Interfaz de reset para picotool -f ────────────────────────────────
@@ -306,11 +332,7 @@ async fn serial_task(
         // Banner corto en CADA apertura del puerto (no solo la primera): si un
         // proceso efímero del host (ModemManager sondeando) abre el puerto
         // antes que el usuario, no se "roba" el único banner del boot.
-        // OJO: write_packet manda UN paquete CDC (máx 64 bytes) — si cambias
-        // el nombre del producto, el banner completo debe seguir cabiendo.
-        let _ = class
-            .write_packet(b"[{{product-name}} - escribe 'help']\r\n")
-            .await;
+        let _ = class.write_packet(BANNER).await;
 
         // ── Purga post-apertura ────────────────────────────────────────────
         // Al abrir /dev/ttyACM0 hay una ventana breve, antes de que el
@@ -433,7 +455,8 @@ async fn app_task(
                 };
                 let _ = write!(
                     resp,
-                    "{{product-name}} v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
+                    "{} v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
+                    PRODUCT_NAME,
                     env!("CARGO_PKG_VERSION"),
                     hex_str,
                     reason,
