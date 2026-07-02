@@ -34,11 +34,12 @@ sudo apt update && sudo apt install -y \
     pkg-config \
     libusb-1.0-0-dev \
     libudev-dev \
-    cmake \
-    flip-link
+    libssl-dev \
+    cmake
 ```
 
-> **En RPi4:** `flip-link` puede no estar en apt. Instálalo luego vía cargo (paso 2).
+> `flip-link` NO existe en los repositorios apt — se instala vía cargo (paso 2).
+> `libssl-dev` es necesario para compilar `cargo-generate` (paso 2).
 
 ---
 
