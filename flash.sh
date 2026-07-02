@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-BINARY="${1:-target/thumbv6m-none-eabi/release/pico_usb_console}"
+BINARY="${1:-target/thumbv6m-none-eabi/release/{{crate_name}}}"
 SERIAL="${PICO_PORT:-/dev/ttyACM0}"
 MAX_WAIT=10
 

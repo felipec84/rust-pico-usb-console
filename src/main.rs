@@ -33,7 +33,7 @@ use panic_persist as _;
 #[cfg(target_os = "none")]
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 3] = [
-    embassy_rp::binary_info::rp_program_name!(c"Pico USB Console"),
+    embassy_rp::binary_info::rp_program_name!(c"{{product-name}}"),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_description!(c"USB CDC Console with Auto-Reset"),
 ];
@@ -178,8 +178,8 @@ async fn main(spawner: Spawner) {
     let serial_str: &'static str = core::str::from_utf8(serial_bytes).unwrap();
 
     let mut config = Config::new(0x2E8A, 0x000A);
-    config.manufacturer = Some("Raspberry Pi");
-    config.product = Some("Pico USB Console");
+    config.manufacturer = Some("{{manufacturer}}");
+    config.product = Some("{{product-name}}");
     config.serial_number = Some(serial_str);
     config.max_power = 100;
     config.max_packet_size_0 = 64;
@@ -306,8 +306,10 @@ async fn serial_task(
         // Banner corto en CADA apertura del puerto (no solo la primera): si un
         // proceso efímero del host (ModemManager sondeando) abre el puerto
         // antes que el usuario, no se "roba" el único banner del boot.
+        // OJO: write_packet manda UN paquete CDC (máx 64 bytes) — si cambias
+        // el nombre del producto, el banner completo debe seguir cabiendo.
         let _ = class
-            .write_packet(b"[Pico USB Console - escribe 'help']\r\n")
+            .write_packet(b"[{{product-name}} - escribe 'help']\r\n")
             .await;
 
         // ── Purga post-apertura ────────────────────────────────────────────
@@ -431,7 +433,7 @@ async fn app_task(
                 };
                 let _ = write!(
                     resp,
-                    "Pico USB Console v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
+                    "{{product-name}} v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
                     env!("CARGO_PKG_VERSION"),
                     hex_str,
                     reason,

@@ -1,0 +1,18 @@
+# Configuración de cargo-generate para usar este repo como template.
+# Este archivo solo existe en la rama `master` (template) y cargo-generate
+# lo elimina del proyecto generado. El nombre del proyecto (project-name /
+# crate_name) lo pide cargo-generate siempre; aquí se definen los
+# placeholders adicionales.
+
+[template]
+cargo_generate_version = ">=0.10.0"
+
+[placeholders.product-name]
+type = "string"
+prompt = "USB product string (aparece en lsusb/picotool y en el banner de la consola — corto)"
+default = "Pico USB Console"
+
+[placeholders.manufacturer]
+type = "string"
+prompt = "USB manufacturer string"
+default = "Raspberry Pi"

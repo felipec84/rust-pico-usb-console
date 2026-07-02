@@ -1,10 +1,10 @@
 [package]
-name = "rust_pico_usb_console"
+name = "{{crate_name}}"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "pico_usb_console"
+name = "{{crate_name}}"
 path = "src/main.rs"
 
 [dependencies]
