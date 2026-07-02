@@ -242,12 +242,33 @@ async fn serial_task(
     let mut line: heapless::Vec<u8, 64> = heapless::Vec::new(); // línea de comando en construcción
 
     loop {
-        // Esperar que el host abra el puerto (miniterm, screen, cat, etc.)
+        // wait_connection() solo espera la enumeración USB (interfaz habilitada
+        // por el host), NO que un programa abra el puerto. Para detectar la
+        // apertura real hay que mirar DTR, que el kernel/pyserial levanta al
+        // abrir /dev/ttyACM0. Sin esto, aperturas efímeras (ModemManager
+        // sondeando el puerto, etc.) son invisibles para el firmware: el banner
+        // y su eco se los lleva el primer proceso que abre el puerto, y la
+        // basura recibida en esa sesión quedaba en `line` contaminando el
+        // primer comando de la sesión real del usuario.
         class.wait_connection().await;
-        // Descartar cualquier línea a medio escribir de una conexión anterior
-        // — si no se limpia aquí, un byte suelto que quedó sin \r/\n puede
-        // colarse como prefijo del primer comando de la nueva sesión.
+        while !class.dtr() {
+            // La señal de reset por baud 1200 (flash.sh usa `stty -F ... 1200`)
+            // llega en una apertura efímera del puerto que puede no levantar
+            // DTR nunca — hay que chequearla también aquí, no solo dentro del
+            // bucle de sesión. El line coding queda guardado en el estado CDC
+            // aunque el puerto ya se haya cerrado.
+            if class.line_coding().data_rate() == 1200 {
+                Timer::after(Duration::from_millis(100)).await;
+                rom_data::reset_to_usb_boot(0, 0);
+            }
+            Timer::after(Duration::from_millis(20)).await;
+        }
+
+        // Frontera de sesión: descartar cualquier línea a medio escribir y
+        // cualquier comando/respuesta pendiente de una conexión anterior.
         line.clear();
+        while RX_CHANNEL.try_receive().is_ok() {}
+        while TX_CHANNEL.try_receive().is_ok() {}
 
         // ── Enviar mensaje de pánico del boot anterior (si existe) ─────────
         //
@@ -279,16 +300,46 @@ async fn serial_task(
                 let _ = class
                     .write_packet(b"Sistema operando normalmente.\r\n\r\n")
                     .await;
-            } else {
-                // Boot limpio
-                let _ = class
-                    .write_packet(b"[Pico USB Console - boot limpio]\r\n")
-                    .await;
             }
         }
 
+        // Banner corto en CADA apertura del puerto (no solo la primera): si un
+        // proceso efímero del host (ModemManager sondeando) abre el puerto
+        // antes que el usuario, no se "roba" el único banner del boot.
+        let _ = class
+            .write_packet(b"[Pico USB Console - escribe 'help']\r\n")
+            .await;
+
+        // ── Purga post-apertura ────────────────────────────────────────────
+        // Al abrir /dev/ttyACM0 hay una ventana breve, antes de que el
+        // programa de terminal configure el modo raw, en la que la disciplina
+        // de línea del kernel todavía tiene ECHO activo: bytes que enviemos en
+        // esa ventana (el banner) vuelven "tecleados" hacia la Pico. Como no
+        // traen \r, quedaban acumulados en `line` y se pegaban como prefijo
+        // del primer comando real ("comando desconocido" pese a teclearlo
+        // bien). Se descarta todo lo recibido hasta que la línea quede en
+        // silencio (máx ~300 ms) — cubre ese eco del tty, sondas tipo
+        // ModemManager y cualquier dato residual del driver USB.
+        let drain_deadline = embassy_time::Instant::now() + Duration::from_millis(300);
+        while embassy_time::Instant::now() < drain_deadline {
+            match with_timeout(Duration::from_millis(50), class.read_packet(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 => {} // eco/basura: descartar y seguir purgando
+                Err(_) => break,         // 50 ms de silencio: línea limpia
+                _ => break,              // error de lectura o paquete vacío
+            }
+        }
+        line.clear();
+
         // ── Bucle de comunicación bidireccional ────────────────────────────
         loop {
+            // Puerto cerrado (DTR abajo) → fin de sesión. read_packet NO
+            // devuelve error cuando el host simplemente cierra el puerto (solo
+            // cuando el USB se des-configura), así que sin este chequeo el
+            // firmware nunca notaba cierres/reaperturas del puerto.
+            if !class.dtr() {
+                break;
+            }
+
             // Detección de baud 1200 → reset a BOOTSEL (para reprogramar).
             let coding = class.line_coding();
             if coding.data_rate() == 1200 {
@@ -311,15 +362,9 @@ async fn serial_task(
                     // ya que el eco en bloque de arriba solo mueve el cursor). No
                     // interpreta secuencias de escape ANSI (flechas, etc. entran
                     // como bytes sueltos en la línea) — alcanza para una consola
-                    // simple tipo esqueleto.
-                    //
-                    // LIMITACIÓN CONOCIDA: en pruebas de hardware real, el PRIMER
-                    // comando escrito justo después del banner de boot a veces
-                    // llega con basura (fragmentos del propio banner) pegada como
-                    // prefijo, y se reporta como "comando desconocido" aunque el
-                    // texto tecleado esté bien. Ocurre solo una vez por boot, en la
-                    // primera línea; toda interacción posterior (reconexiones
-                    // incluidas) es 100% confiable — ver README.md.
+                    // simple tipo esqueleto. (El eco del tty del host durante la
+                    // apertura del puerto, que ensuciaba el primer comando, se
+                    // purga tras el banner — ver "Purga post-apertura" arriba.)
                     for &b in &buf[..n] {
                         match b {
                             b'\r' | b'\n' => {

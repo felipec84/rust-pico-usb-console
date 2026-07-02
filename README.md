@@ -83,23 +83,36 @@ Connect with a serial monitor (`python3 -m serial.tools.miniterm /dev/ttyACM0
 
 These exist to demonstrate reading real chip info and dispatching commands
 over embassy channels — replace them with your own commands in `app_task`'s
-`match` when using this as a template. Three honest limitations worth knowing:
+`match` when using this as a template. Two honest limitations worth knowing:
 
 - No ANSI escape handling (arrow keys etc. type garbage into the line, use
   plain typing + backspace).
 - The reset-reason reported by `info` can't distinguish a power-on reset
   from our own software resets (panic-persist, `SCB::sys_reset()`) — the
   RP2040's watchdog register only records watchdog-triggered resets.
-- **The very first command typed right after the boot banner can
-  occasionally come back "unknown command"** even when typed correctly — in
-  hardware testing, the first post-banner read sometimes picks up leftover
-  fragments of the banner text as a prefix. This is a one-time, first-line-
-  only quirk in the interaction between the boot banner's `write_packet`
-  calls and the CDC-ACM `read_packet` call that follows (still unresolved —
-  suspected embassy-rp/RP2040 USB driver interaction, not a bug in the
-  command parsing itself). Every subsequent command, and every reconnect,
-  has been 100% reliable across extensive testing. If your first command
-  after connecting looks wrong, just retype it.
+
+A third limitation used to live here: the first command typed after boot
+occasionally came back "unknown command" with garbage glued as an invisible
+prefix. Two stacked root causes, both fixed:
+
+1. `CdcAcmClass::wait_connection()` only waits for USB *enumeration*, not
+   for a program opening the port — and `read_packet` does **not** error
+   when the host closes the port. So the firmware never noticed port
+   opens/closes: if a host process (e.g. ModemManager probing the new
+   ttyACM) opened the port before you did, its session and yours looked
+   like one continuous stream, and bytes received during the probe stayed
+   in the line buffer, prefixing your first command. The firmware now
+   tracks **DTR** (raised on open, dropped on close) as the real session
+   boundary, and clears the line buffer and both command channels at each
+   new session.
+2. When a port is opened there is a brief window, before the terminal
+   program switches the tty to raw mode, where the kernel line discipline
+   still has `ECHO` enabled — anything the Pico sends in that window (the
+   banner) comes back as fake input. After the banner, the firmware drains
+   and discards input until the line is quiet (max ~300 ms).
+
+As a bonus, the short banner now prints on *every* port open, so an
+ephemeral host probe can no longer steal the boot's only banner.
 
 ## `picotool -f` — how it works (and why it's finicky)
 
