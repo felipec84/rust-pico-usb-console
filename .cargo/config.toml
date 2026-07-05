@@ -4,9 +4,11 @@ target = "thumbv6m-none-eabi"
 [target.thumbv6m-none-eabi]
 runner = "elf2uf2-rs --deploy --serial"
 
-rustflags = [
-    "-C", "link-arg=--nmagic",
-    "-C", "link-arg=-Tlink.x",
-    "-C", "linker=flip-link",
-    # -Tdefmt.x NO incluido: no usamos defmt sin probe SWD
-]
+# rustflags se heredan del .cargo/config.toml raíz para evitar duplicados en el enlazador si el proyecto se anida en un workspace.
+# Si el proyecto se compila standalone (fuera de un repositorio padre con config.toml), build.rs los inyecta dinámicamente.
+# rustflags = [
+#     "-C", "link-arg=--nmagic",
+#     "-C", "link-arg=-Tlink.x",
+#     "-C", "linker=flip-link",
+#     # -Tdefmt.x NO incluido: no usamos defmt sin probe SWD
+# ]
