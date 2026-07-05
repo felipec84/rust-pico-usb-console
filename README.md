@@ -96,6 +96,14 @@ are the stock Pico values) and substitutes the project name into
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.
 
+### Parent Cargo Config Merging (Workspace Compatibility)
+
+Cargo searches for and merges target-specific configurations (like `[target.thumbv6m-none-eabi].rustflags`) recursively from parent directories. If you nest a project generated from this template inside another Cargo repository that also defines `rustflags` for the same target, Cargo concatenates the flags, causing linker scripts to run twice. This results in a linker error (`region 'BOOT2' already defined`).
+
+To prevent this, this template:
+1. Comments out `rustflags` in `.cargo/config.toml`.
+2. Employs [build.rs](build.rs) to walk up parent folders and check for ancestor configurations. If no parent configuration defines `rustflags` (standalone build), it dynamically outputs the required link arguments (`cargo:rustc-link-arg=...`). Otherwise, it lets the parent configuration handle it.
+
 ## Built-in console commands
 
 Connect with a serial monitor (`python3 -m serial.tools.miniterm /dev/ttyACM0
@@ -181,6 +189,6 @@ that mismatch is almost always the cause.
 | `src/main.rs` | Firmware: USB setup, console task, picotool reset handler, app task |
 | `memory.x` | Linker script — flash/RAM layout, `PANDUMP` region for panic-persist |
 | `flash.sh` | Build + auto-reset + `picotool load` in one step |
-| `build.rs` | Reruns build on `memory.x` changes |
-| `.cargo/config.toml` | Target, linker flags, `elf2uf2-rs` runner |
+| `build.rs` | Reruns build on `memory.x` changes and dynamically detects parent configurations to configure target linker flags without duplicating them |
+| `.cargo/config.toml` | Target, runner, and commented target flags (handled dynamically by `build.rs`) |
 | `embassy-rp2040-usb-guia.md` | Deep-dive walkthrough (Spanish) of how the USB-CDC + panic-persist setup was built, including picotool install/udev rules |

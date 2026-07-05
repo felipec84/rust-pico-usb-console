@@ -213,11 +213,12 @@ target = "thumbv6m-none-eabi"
 # Para un flujo de flasheo robusto y automatizado, usa ./flash.sh.
 runner = "elf2uf2-rs --deploy --serial"
 
-rustflags = [
-    "-C", "link-arg=--nmagic",
-    "-C", "link-arg=-Tlink.x",
-    "-C", "linker=flip-link",
-]
+# rustflags se heredan del padre en workspaces, o se inyectan mediante build.rs en standalone
+# rustflags = [
+#     "-C", "link-arg=--nmagic",
+#     "-C", "link-arg=-Tlink.x",
+#     "-C", "linker=flip-link",
+# ]
 ```
 
 ### `memory.x`
@@ -254,8 +255,41 @@ SECTIONS {
 ### `build.rs`
 
 ```rust
+use std::env;
+use std::fs;
+use std::path::Path;
+
+fn file_defines_rustflags(path: &Path) -> bool {
+    if let Ok(content) = fs::read_to_string(path) {
+        content.contains("[target.thumbv6m-none-eabi]") && content.contains("rustflags")
+    } else {
+        false
+    }
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=memory.x");
+
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let manifest_path = Path::new(&manifest_dir);
+
+    // Buscar en carpetas superiores un .cargo/config.toml o .cargo/config que defina rustflags
+    let mut has_parent_config = false;
+    let mut current = manifest_path.parent();
+    while let Some(path) = current {
+        let config_toml = path.join(".cargo/config.toml");
+        let config_no_ext = path.join(".cargo/config");
+        if file_defines_rustflags(&config_toml) || file_defines_rustflags(&config_no_ext) {
+            has_parent_config = true;
+            break;
+        }
+        current = path.parent();
+    }
+
+    if !has_parent_config {
+        println!("cargo:rustc-link-arg=--nmagic");
+        println!("cargo:rustc-link-arg=-Tlink.x");
+    }
 }
 ```
 
