@@ -52,6 +52,9 @@ logic in one place and go.
 - [`picotool`](https://github.com/raspberrypi/picotool), built from source or
   packaged — needed for `-f` reprogramming and `info`/`reboot`. See
   `embassy-rp2040-usb-guia.md` §3 for build + udev rules instructions.
+- [`uv`](https://docs.astral.sh/uv/) — only needed to run
+  `test/console_test.py` (see [Hardware test](#hardware-test)); it resolves
+  the script's `pyserial` dependency on its own, no venv/pip setup required.
 
 ## Build & flash
 
@@ -74,6 +77,44 @@ board that's already sitting in BOOTSEL (manual button press).
 Manual build only: `cargo build --release`.
 
 Serial monitor: `python3 -m serial.tools.miniterm /dev/ttyACM0 115200`.
+
+## Hardware test
+
+`test/console_test.py` is a [uv](https://docs.astral.sh/uv/) script (no
+manual venv/pip setup — `uv run` resolves its one dependency, `pyserial`,
+on the fly) that drives the console over USB and checks the replies look
+right, instead of eyeballing a terminal by hand:
+
+```sh
+uv run test/console_test.py
+```
+
+It finds the board automatically by USB VID:PID (the stock `2E8A:000A`
+values, or your own if you changed them — override with `PICO_VID`/
+`PICO_PID`, or bypass discovery entirely with `PICO_PORT`/`--port`, same
+convention as `flash.sh`). It exercises `help`/`info`/`temp`/`uptime`, an
+unknown-command error path, and the DTR session-boundary behavior described
+below (reopening the port doesn't glue stale input onto the next command).
+
+For a **fast, side-effect-free presence check** — useful for a coding agent
+deciding whether it can claim a change is hardware-verified, or a script
+gating on "is a Pico plugged in right now" — use:
+
+```sh
+uv run test/console_test.py --check   # exit 0 + prints the port if found, 1 if not
+```
+
+This does discovery only; it never opens the serial port. See `CLAUDE.md`
+for how this is meant to fit into a Claude Code session working on this
+repo.
+
+`--include-bootsel` additionally tests the `bootsel` command, which reboots
+the board into BOOTSEL and leaves it there — you'll need to run `./flash.sh`
+again afterward to restore the firmware, so it's opt-in, not part of the
+default run.
+
+If you add your own console commands when using this as a template, extend
+`test/console_test.py` with matching checks in the same change.
 
 ## Using this as a template for a new project
 
@@ -235,6 +276,8 @@ that mismatch is almost always the cause.
 | `src/watchdog.rs` | Watchdog feed task + consecutive-reset bootloop guard |
 | `memory.x` | Linker script — flash/RAM layout, `PANDUMP` region for panic-persist |
 | `flash.sh` | Build + port discovery + auto-reset + `picotool load` in one step |
+| `test/console_test.py` | Hardware smoke test — drives the console over USB and checks the replies, see [Hardware test](#hardware-test) |
+| `CLAUDE.md` | Instructs Claude Code sessions in this repo to use the hardware test before claiming a change is verified |
 | `build.rs` | Reruns build on `memory.x` changes and dynamically detects parent configurations to configure target linker flags without duplicating them |
 | `.cargo/config.toml` | Target, runner, and commented target flags (handled dynamically by `build.rs`) |
 | `embassy-rp2040-usb-guia.md` | Deep-dive walkthrough (Spanish) of how the USB-CDC + panic-persist setup was built, including picotool install/udev rules |
