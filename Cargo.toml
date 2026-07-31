@@ -16,6 +16,10 @@ embassy-rp = { version = "0.10.0", git = "https://github.com/embassy-rs/embassy"
 embassy-usb  = { version = "0.6.0", git = "https://github.com/embassy-rs/embassy" }
 embassy-time = { version = "0.5.1", git = "https://github.com/embassy-rs/embassy" }
 embassy-sync = { version = "0.8.0", git = "https://github.com/embassy-rs/embassy" }
+# embassy-futures: select()/select3() para que una tarea espere en varios
+# eventos a la vez (útil para un módulo con un loop periódico que también
+# debe atender peticiones RPC externas por Signal).
+embassy-futures = { version = "0.1.2", git = "https://github.com/embassy-rs/embassy" }
 
 cortex-m    = { version = "0.7", features = ["inline-asm"] }
 cortex-m-rt = "0.7"
@@ -31,6 +35,11 @@ heapless    = "0.9"
 # Feature "utf8": permite recuperar el mensaje como &str en lugar de &[u8],
 # lo que facilita enviarlo directamente por write_packet sin conversión.
 panic-persist = { version = "0.3", features = ["utf8"] }
+
+# assign-resources: parte el `Peripherals` que devuelve embassy_rp::init() en
+# structs con nombre, uno por subsistema, para que main() no tenga que
+# conocer el pinout de cada módulo. Ver src/resources.rs.
+assign-resources = "0.5.0"
 
 [profile.release]
 debug         = 2      # conservar símbolos para addr2line

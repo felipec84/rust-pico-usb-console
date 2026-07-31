@@ -38,6 +38,21 @@
       "command": "picotool info -f 2>/dev/null || picotool info",
       "group": "test",
       "problemMatcher": []
+    },
+    {
+      "label": "Test de consola (hardware)",
+      "type": "shell",
+      "command": "uv run test/console_test.py",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Verificar Pico conectada (--check)",
+      "type": "shell",
+      "command": "uv run test/console_test.py --check",
+      "group": "test",
+      "problemMatcher": []
     }
   ]
 }
