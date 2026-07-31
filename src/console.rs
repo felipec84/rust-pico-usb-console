@@ -223,6 +223,16 @@ pub async fn serial_task(
 // que hay que copiar para cualquier sensor propio, en particular si su
 // lectura es lenta (I2C, 1-Wire): la lectura ocurre en la tarea dueña del
 // periférico, la consola solo lee el último valor cacheado.
+//
+// Si en cambio necesitas que un comando DISPARE una acción en un módulo que
+// posee un bus exclusivo (no solo leer su último estado), usa una petición
+// RPC por `embassy_sync::signal::Signal` en vez de pasarle el periférico a
+// esta tarea: un `Signal<_, ()>` de pedido y un `Signal<_, T>` de respuesta,
+// con una función async `pub async fn hacer_algo() -> T` en el módulo dueño
+// que hace `REQUEST.signal(()); RESULT.wait().await`. El módulo dueño queda
+// esperando ese Signal junto a su loop periódico (con `select()`/`select3()`
+// de embassy-futures). Este esqueleto no trae un ejemplo concreto porque no
+// tiene un bus compartido por defecto — agrégalo cuando tengas uno.
 #[embassy_executor::task]
 pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
     loop {

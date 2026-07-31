@@ -9,9 +9,28 @@ logic in one place and go.
 ## What's included
 
 - **USB-CDC interactive console** — line-buffered input with backspace
-  support, dispatches full command lines to `app_task` over an
-  `embassy_sync::channel::Channel` (and gets responses back over a second
-  channel) — see [Built-in console commands](#built-in-console-commands).
+  support, dispatches full command lines to `app_task` (`src/console.rs`)
+  over an `embassy_sync::channel::Channel` (and gets responses back over a
+  second channel) — see [Built-in console commands](#built-in-console-commands).
+- **Per-subsystem peripheral ownership** — `embassy_rp::init()`'s single
+  `Peripherals` struct is split by `assign_resources!` (`src/resources.rs`)
+  into named groups (`UsbConsoleResources`, `SensorsResources`, ...), one per
+  module. `main.rs` never touches `p.PIN_XX` directly; each module owns
+  exactly the pins it needs, declared in one place, so a pin used twice is a
+  compile error instead of a runtime conflict.
+- **"Module owns the peripheral, consumers read cached state" pattern** — see
+  `src/sensors.rs`: a dedicated task samples the ADC on its own schedule and
+  publishes into a `static` behind a mutex; `console.rs` only ever calls the
+  non-blocking `sensors::get_status()`, never touches the ADC. Copy this
+  pattern for any sensor you add — it's what lets a slow peripheral (I2C,
+  1-Wire) live behind a fast console without blocking command handling.
+- **Watchdog + bootloop guard** (`src/watchdog.rs`) — a task feeds the
+  hardware watchdog periodically so a hung executor self-recovers by reset.
+  A reboot counter stored in the `.uninit` RAM section (survives soft-resets,
+  cleared by real power-on) escalates to a clean `panic!()` after 3
+  consecutive watchdog-triggered resets, instead of reset-looping forever —
+  important if a reset has a physical side effect (relay chatter, etc.) on
+  your hardware.
 - **Crash reporting via `panic-persist`** — on panic, the message is saved to
   a small RAM region (`PANDUMP`, see `memory.x`) and the chip soft-resets.
   The message is replayed over USB-CDC on the next boot, so you can see why
@@ -44,6 +63,13 @@ This builds in release, converts to UF2, triggers a 1200-baud reset if the
 device is already enumerated as a serial port, waits for BOOTSEL, then loads
 via `picotool`. First flash on a blank board still needs the physical BOOTSEL
 button (hold it while plugging in USB).
+
+The script discovers the port under `/dev/serial/by-id/` (matching any CDC
+interface, `-if01`) instead of assuming `/dev/ttyACM0` — if more than one
+serial device is connected, it aborts rather than risk resetting the wrong
+one; set `PICO_PORT=/dev/ttyACMx` to pick one explicitly. Pass `--force`/`-f`
+to skip port discovery and the 1200-baud reset entirely and just wait for a
+board that's already sitting in BOOTSEL (manual button press).
 
 Manual build only: `cargo build --release`.
 
@@ -87,12 +113,23 @@ are the stock Pico values) and substitutes the project name into
    and work fine for development.
 2. Leave `config.serial_number` alone — it's derived from the flash's unique
    ID at boot (see below), not something to hardcode.
-3. Write your actual logic in `app_task()` (`src/main.rs`). It already
-   receives full command lines from the console via `RX_CHANNEL` and answers
-   through `TX_CHANNEL`; add your own commands to its `match`, and add
-   GPIO/I2C/SPI/ADC peripherals to its signature as needed (own them in
-   `main()` and pass them in, same pattern as the ADC/watchdog below).
-4. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
+3. Add your peripherals to a group in `src/resources.rs` (`assign_resources!`
+   macro — see the comments there), one group per module you're going to
+   write.
+4. Write your module (`src/your_module.rs`), following the pattern in
+   `src/sensors.rs`: a `#[embassy_executor::task]` that owns the
+   `YourModuleResources` struct and samples/drives the hardware on its own
+   schedule, plus a non-blocking `pub fn get_status()` that other tasks call
+   to read the last cached value. If a command instead needs to *trigger* an
+   action in that module (not just read its state), use an
+   `embassy_sync::signal::Signal` request/response pair — see the comment
+   above `app_task` in `src/console.rs` for the shape of that pattern.
+5. Write your actual console commands in `app_task()`'s `match`
+   (`src/console.rs`). It already receives full command lines from
+   `RX_CHANNEL` and answers through `TX_CHANNEL`.
+6. Spawn your new task from `main()` (`src/main.rs`), passing it the resource
+   group from step 3 — same pattern as `sensors::sensors_task(r.sensors)`.
+7. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.
 
@@ -113,13 +150,18 @@ Connect with a serial monitor (`python3 -m serial.tools.miniterm /dev/ttyACM0
 |---|---|
 | `help` | Lists the available commands |
 | `info` | Program name/version, flash unique ID (hex), and last reset reason |
-| `temp` | Reads the RP2040's internal temperature sensor via the ADC (async, RP2040 datasheet §4.9.5 calibration formula) |
+| `temp` | Reads the RP2040's internal temperature sensor — cached value from `sensors.rs`'s background task (async ADC read, EMA-filtered, RP2040 datasheet §4.9.5 calibration formula), not read live inside the command handler |
 | `uptime` | Milliseconds since boot |
 | `bootsel` | Reboots into BOOTSEL mode (same `rom_data::reset_to_usb_boot` call used by the 1200-baud trick) |
 
 These exist to demonstrate reading real chip info and dispatching commands
 over embassy channels — replace them with your own commands in `app_task`'s
-`match` when using this as a template. Two honest limitations worth knowing:
+`match` when using this as a template. The response channel (`TX_CHANNEL` in
+`console.rs`) holds 32 pending lines, so a command that replies with several
+`TX_CHANNEL.send(...).await` calls (e.g. a multi-line dump) doesn't silently
+drop lines the way a shallower channel combined with `try_send` would.
+
+Two honest limitations worth knowing:
 
 - No ANSI escape handling (arrow keys etc. type garbage into the line, use
   plain typing + backspace).
@@ -186,9 +228,13 @@ that mismatch is almost always the cause.
 
 | File | Purpose |
 |---|---|
-| `src/main.rs` | Firmware: USB setup, console task, picotool reset handler, app task |
+| `src/main.rs` | Hardware init (USB, flash, watchdog), picotool reset handler, task spawning — no application logic |
+| `src/resources.rs` | `assign_resources!` peripheral groups, one per module |
+| `src/console.rs` | USB-CDC transport tasks (`usb_task`, `serial_task`) and the command dispatcher (`app_task`) — add your own commands here |
+| `src/sensors.rs` | Example of the "module owns the peripheral, consumers read cached state" pattern (internal temp sensor via ADC) — copy this shape for your own sensors |
+| `src/watchdog.rs` | Watchdog feed task + consecutive-reset bootloop guard |
 | `memory.x` | Linker script — flash/RAM layout, `PANDUMP` region for panic-persist |
-| `flash.sh` | Build + auto-reset + `picotool load` in one step |
+| `flash.sh` | Build + port discovery + auto-reset + `picotool load` in one step |
 | `build.rs` | Reruns build on `memory.x` changes and dynamically detects parent configurations to configure target linker flags without duplicating them |
 | `.cargo/config.toml` | Target, runner, and commented target flags (handled dynamically by `build.rs`) |
 | `embassy-rp2040-usb-guia.md` | Deep-dive walkthrough (Spanish) of how the USB-CDC + panic-persist setup was built, including picotool install/udev rules |
