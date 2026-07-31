@@ -78,6 +78,19 @@ Manual build only: `cargo build --release`.
 
 Serial monitor: `python3 -m serial.tools.miniterm /dev/ttyACM0 115200`.
 
+**Known flaky spot (under investigation):** occasionally, after `picotool
+load -x` reports success and reboots the board into the app, the device
+doesn't re-enumerate at all — not as the app, not back in BOOTSEL, nothing
+in `lsusb`/`dmesg` — for a long time (60s+). It has always recovered with a
+physical unplug/replug (sometimes into a different USB port), and once
+recovered, the same firmware runs correctly and repeatably. Not yet
+reproduced with a clear trigger; current suspicion is a `picotool -x` /
+host USB re-enumeration quirk rather than a firmware defect — the console
+itself has passed the full `test/console_test.py` suite, including a real
+`bootsel` reboot cycle, multiple times back to back once the board is
+actually enumerated. If you hit it, unplug/replug (a different port seems
+to help) rather than assume the firmware is broken.
+
 ## Hardware test
 
 `test/console_test.py` is a [uv](https://docs.astral.sh/uv/) script (no
