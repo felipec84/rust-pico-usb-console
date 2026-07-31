@@ -38,6 +38,10 @@ use resources::*;
 // hardware y las lanza — ver console.rs para la sustancia.
 mod console;
 
+// sensors: dueño exclusivo del ADC. Patrón a seguir para cualquier sensor
+// propio — ver el comentario de cabecera en sensors.rs.
+mod sensors;
+
 // ─── Identidad del producto ────────────────────────────────────────────────
 // CUSTOMIZE PER PROJECT: nombre visible en lsusb/picotool y en el banner.
 // Los asserts se evalúan EN COMPILACIÓN — un nombre demasiado largo aquí no
@@ -211,12 +215,6 @@ async fn main(spawner: Spawner) {
     // distingue esos casos en este registro, así que lo decimos tal cual.
     let reset_reason: Option<ResetReason> = Watchdog::new(r.usb_console.watchdog).reset_reason();
 
-    // ADC para el sensor de temperatura interno, en modo async: la tarea se
-    // suspende y el executor sigue trabajando mientras la conversión corre;
-    // ADC_IRQ_FIFO la despierta al terminar.
-    let adc = adc::Adc::new(r.sensors.adc, Irqs, adc::Config::default());
-    let temp_channel = adc::Channel::new_temp_sensor(r.sensors.temp_sensor);
-
     let mut builder = Builder::new(
         driver,
         config,
@@ -244,5 +242,6 @@ async fn main(spawner: Spawner) {
     // ── PASO 4: Lanzar tareas ─────────────────────────────────────────────
     spawner.spawn(console::usb_task(usb).unwrap());
     spawner.spawn(console::serial_task(class, panic_msg).unwrap());
-    spawner.spawn(console::app_task(uid, reset_reason, adc, temp_channel).unwrap());
+    spawner.spawn(console::app_task(uid, reset_reason).unwrap());
+    spawner.spawn(sensors::sensors_task(r.sensors).unwrap());
 }

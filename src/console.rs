@@ -6,7 +6,6 @@
 
 use core::fmt::Write as _;
 
-use embassy_rp::adc;
 use embassy_rp::peripherals::USB;
 use embassy_rp::rom_data;
 use embassy_rp::usb::Driver;
@@ -38,14 +37,6 @@ pub(crate) fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
         out[i * 2] = HEX[(b >> 4) as usize];
         out[i * 2 + 1] = HEX[(b & 0xf) as usize];
     }
-}
-
-// Fórmula de calibración del sensor de temperatura interno (RP2040 datasheet §4.9.5).
-fn convert_to_celsius(raw_temp: u16) -> f32 {
-    let temp = 27.0 - (raw_temp as f32 * 3.3 / 4096.0 - 0.706) / 0.001721;
-    let sign = if temp < 0.0 { -1.0 } else { 1.0 };
-    let rounded_temp_x10: i16 = ((temp * 10.0) + 0.5 * sign) as i16;
-    (rounded_temp_x10 as f32) / 10.0
 }
 
 // ─── Tarea 1: USB stack ────────────────────────────────────────────────────
@@ -226,13 +217,14 @@ pub async fn serial_task(
 // Espera líneas de comando de serial_task (vía RX_CHANNEL) y responde por
 // TX_CHANNEL. Los comandos de abajo (help/info/temp/uptime/bootsel) son un
 // ejemplo — reemplázalos por los de tu proyecto en este mismo match.
+//
+// Nota sobre "temp": lee sensors::get_status(), NO toca el ADC acá. El ADC es
+// propiedad exclusiva de sensors_task (ver sensors.rs) — este patrón es el
+// que hay que copiar para cualquier sensor propio, en particular si su
+// lectura es lenta (I2C, 1-Wire): la lectura ocurre en la tarea dueña del
+// periférico, la consola solo lee el último valor cacheado.
 #[embassy_executor::task]
-pub async fn app_task(
-    uid: [u8; 8],
-    reset_reason: Option<ResetReason>,
-    mut adc: adc::Adc<'static, adc::Async>,
-    mut temp_channel: adc::Channel<'static>,
-) {
+pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
     loop {
         let msg = RX_CHANNEL.receive().await;
         let mut resp: heapless::String<200> = heapless::String::new();
@@ -259,15 +251,14 @@ pub async fn app_task(
                     reason,
                 );
             }
-            b"temp" => match adc.read(&mut temp_channel).await {
-                Ok(raw) => {
-                    let c = convert_to_celsius(raw);
-                    let _ = write!(resp, "Temperatura interna: {:.1} C (raw={})", c, raw);
-                }
-                Err(_) => {
-                    let _ = write!(resp, "Error leyendo el ADC");
-                }
-            },
+            b"temp" => {
+                let status = crate::sensors::get_status();
+                let _ = write!(
+                    resp,
+                    "Temperatura interna: {:.1} C (raw={})",
+                    status.temperature_c, status.raw_temp
+                );
+            }
             b"uptime" => {
                 let ms = embassy_time::Instant::now().as_millis();
                 let _ = write!(resp, "Uptime: {} ms", ms);
