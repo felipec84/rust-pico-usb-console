@@ -42,6 +42,9 @@ mod console;
 // propio — ver el comentario de cabecera en sensors.rs.
 mod sensors;
 
+// watchdog: feed periódico del watchdog + protección contra bootloop.
+mod watchdog;
+
 // ─── Identidad del producto ────────────────────────────────────────────────
 // CUSTOMIZE PER PROJECT: nombre visible en lsusb/picotool y en el banner.
 // Los asserts se evalúan EN COMPILACIÓN — un nombre demasiado largo aquí no
@@ -213,7 +216,13 @@ async fn main(spawner: Spawner) {
     // Razón del último reset. None cubre tanto power-on reset como nuestros
     // propios soft-resets (panic-persist / SCB::sys_reset()) — el RP2040 no
     // distingue esos casos en este registro, así que lo decimos tal cual.
-    let reset_reason: Option<ResetReason> = Watchdog::new(r.usb_console.watchdog).reset_reason();
+    let watchdog = Watchdog::new(r.usb_console.watchdog);
+    let reset_reason: Option<ResetReason> = watchdog.reset_reason();
+
+    // Debe llamarse antes de spawnear ninguna tarea (ver watchdog.rs):
+    // corta el arranque con panic!() si venimos de >= 3 reinicios seguidos
+    // por timeout del watchdog, en vez de seguir reintentando para siempre.
+    watchdog::check_bootloop(reset_reason);
 
     let mut builder = Builder::new(
         driver,
@@ -244,4 +253,5 @@ async fn main(spawner: Spawner) {
     spawner.spawn(console::serial_task(class, panic_msg).unwrap());
     spawner.spawn(console::app_task(uid, reset_reason).unwrap());
     spawner.spawn(sensors::sensors_task(r.sensors).unwrap());
+    spawner.spawn(watchdog::watchdog_task(watchdog).unwrap());
 }
