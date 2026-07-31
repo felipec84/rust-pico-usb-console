@@ -28,6 +28,17 @@ use static_cell::StaticCell;
 // con este crate — panic-persist ya incluye su propio #[panic_handler].
 use panic_persist as _;
 
+// resources: reparto de periféricos por subsistema vía `assign-resources`
+// (assign_resources!/split_resources!). Ver resources.rs.
+mod resources;
+// Los structs de recursos (UsbConsoleResources, SensorsResources, ...)
+// generados por assign_resources! en resources.rs deben quedar en scope acá
+// porque split_resources!() los nombra sin calificar. `split_resources!` en
+// sí queda definida en la RAÍZ del crate (assign_resources! la exporta con
+// #[macro_export] sin importar en qué módulo se invocó), así que se usa
+// directo, sin `use`.
+use resources::*;
+
 // ─── Identidad del producto ────────────────────────────────────────────────
 // CUSTOMIZE PER PROJECT: nombre visible en lsusb/picotool y en el banner.
 // Los asserts se evalúan EN COMPILACIÓN — un nombre demasiado largo aquí no
@@ -128,7 +139,7 @@ const FLASH_SIZE: usize = 2 * 1024 * 1024;
 // el string de serie USB). Para que `picotool -f` pueda re-encontrar el
 // dispositivo tras el reboot, el serial USB en modo normal debe ser ese
 // mismo ID en hex (igual que hace pico-sdk con pico_get_unique_board_id()).
-// Un serial arbitrario como "ECODITEC001" hace que picotool nunca reconozca
+// Un serial arbitrario como "MY-DEVICE-01" hace que picotool nunca reconozca
 // el dispositivo reiniciado y agote sus reintentos, aunque el reboot en sí
 // funcione.
 static SERIAL_BUF: StaticCell<[u8; 16]> = StaticCell::new();
@@ -180,7 +191,13 @@ async fn main(spawner: Spawner) {
 
     // ── PASO 2: Inicializar hardware ──────────────────────────────────────
     let p = embassy_rp::init(Default::default());
-    let driver = Driver::new(p.USB, Irqs);
+
+    // Reparto de periféricos por subsistema (ver resources.rs): a partir de
+    // acá ya no se toca `p.XXX` directamente, todo pasa por los grupos de
+    // `r` (r.usb_console, r.sensors, ...).
+    let r = split_resources!(p);
+
+    let driver = Driver::new(r.usb_console.usb, Irqs);
 
     // ── PASO 3: Configurar USB ─────────────────────────────────────────────
     //
@@ -196,7 +213,7 @@ async fn main(spawner: Spawner) {
     // flash en hex (ver comentario junto a SERIAL_BUF) para que picotool -f
     // pueda re-encontrar el dispositivo tras el reboot a BOOTSEL. No lo
     // reemplaces por un string fijo.
-    let mut flash: Flash<'_, _, Blocking, FLASH_SIZE> = Flash::new_blocking(p.FLASH);
+    let mut flash: Flash<'_, _, Blocking, FLASH_SIZE> = Flash::new_blocking(r.usb_console.flash);
     let mut uid = [0u8; 8];
     flash.blocking_unique_id(&mut uid).unwrap();
     let serial_bytes = SERIAL_BUF.init([0u8; 16]);
@@ -213,13 +230,13 @@ async fn main(spawner: Spawner) {
     // Razón del último reset. None cubre tanto power-on reset como nuestros
     // propios soft-resets (panic-persist / SCB::sys_reset()) — el RP2040 no
     // distingue esos casos en este registro, así que lo decimos tal cual.
-    let reset_reason: Option<ResetReason> = Watchdog::new(p.WATCHDOG).reset_reason();
+    let reset_reason: Option<ResetReason> = Watchdog::new(r.usb_console.watchdog).reset_reason();
 
     // ADC para el sensor de temperatura interno, en modo async: la tarea se
     // suspende y el executor sigue trabajando mientras la conversión corre;
     // ADC_IRQ_FIFO la despierta al terminar.
-    let adc = adc::Adc::new(p.ADC, Irqs, adc::Config::default());
-    let temp_channel = adc::Channel::new_temp_sensor(p.ADC_TEMP_SENSOR);
+    let adc = adc::Adc::new(r.sensors.adc, Irqs, adc::Config::default());
+    let temp_channel = adc::Channel::new_temp_sensor(r.sensors.temp_sensor);
 
     let mut builder = Builder::new(
         driver,
