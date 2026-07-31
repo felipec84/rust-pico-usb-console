@@ -117,12 +117,31 @@ def send_command(ser: serial.Serial, cmd: str, max_s: float = 1.5) -> str:
     return read_until_quiet(ser, quiet_ms=250, max_s=max_s)
 
 
+def open_fresh_session(port: str) -> serial.Serial:
+    """Opens the port and forces a real DTR low->high edge.
+
+    pyserial raises DTR automatically on open, but if the line was already
+    high — a lingering handle from a previous run, or a host process like
+    ModemManager that auto-probes new ttyACM devices — that "raise" isn't a
+    detectable edge, and the firmware (which sends the banner on DTR
+    low->high, see serial_task in console.rs) never notices a new session.
+    Forcing the drop ourselves guarantees the firmware sees a fresh open
+    regardless of whatever state the line was already in.
+    """
+    ser = serial.Serial(port, BAUD, timeout=1)
+    ser.dtr = False
+    time.sleep(0.1)
+    ser.reset_input_buffer()
+    ser.dtr = True
+    return ser
+
+
 def run_tests(port: str, include_bootsel: bool) -> list[Check]:
     checks: list[Check] = []
 
     c = Check(f"open {port} and read initial banner")
     try:
-        ser = serial.Serial(port, BAUD, timeout=1)
+        ser = open_fresh_session(port)
     except serial.SerialException as e:
         c.failed(str(e))
         checks.append(c)
@@ -198,7 +217,7 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
             probe = serial.Serial(port, BAUD, timeout=0.3)
             time.sleep(0.15)
             probe.close()
-        ser = serial.Serial(port, BAUD, timeout=1)
+        ser = open_fresh_session(port)
         read_until_quiet(ser, quiet_ms=400, max_s=2.0)  # banner + purge
         resp = send_command(ser, "uptime")
         if re.search(r"Uptime:\s*\d+\s*ms", resp) and "desconocido" not in resp.lower():
@@ -213,7 +232,7 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
     if include_bootsel:
         c = Check("'bootsel' reboots into BOOTSEL (device will disappear)")
         try:
-            ser = serial.Serial(port, BAUD, timeout=1)
+            ser = open_fresh_session(port)
             read_until_quiet(ser, quiet_ms=400, max_s=2.0)
             ser.write(b"bootsel\r\n")
             time.sleep(0.5)
