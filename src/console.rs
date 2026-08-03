@@ -29,6 +29,28 @@ static RX_CHANNEL: Channel<ThreadModeRawMutex, heapless::Vec<u8, 64>, 4> = Chann
 pub(crate) static TX_CHANNEL: Channel<ThreadModeRawMutex, heapless::String<200>, 32> =
     Channel::new();
 
+// ─── Máscara de interfaces para el modo BOOTSEL ────────────────────────────
+//
+// Segundo argumento de `rom_data::reset_to_usb_boot`. Bit 0 deshabilita la
+// interfaz USB Mass Storage (el disco RPI-RP2); bit 1 deshabilitaría PICOBOOT.
+// Dejamos PICOBOOT viva porque es la que usa picotool — el disco no lo usa
+// nadie en este flujo de trabajo.
+//
+// Por qué apagar el disco (MEDIDO en Ubuntu 24.04, 2026-08-03): con la máscara
+// en 0 el kernel engancha `usb-storage`, monta `/dev/sda1` (label RPI-RP2) y,
+// cuando picotool termina de cargar y reinicia la placa, el disco desaparece
+// en plena operación SCSI. El kernel registra entonces:
+//
+//   device offline error, dev sda, sector 260 op 0x1:(WRITE)
+//   Buffer I/O error on dev sda1, logical block 259, lost async page write
+//   FAT-fs (sda1): unable to read boot sector to mark fs as dirty
+//
+// Con la máscara en 1 no aparece ningún `sd*` ni una sola línea de SCSI, y
+// picotool sigue funcionando igual. Es ruido evitable en `journalctl`, no la
+// causa del bug de re-enumeración — ese era otro (ver
+// usb-reenum-investigation.md).
+const DISABLE_MSC: u32 = 1;
+
 // pub(crate): la usa main() (número de serie USB, a partir del ID de la
 // flash) además de app_task más abajo (comando "info").
 pub(crate) fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
@@ -73,7 +95,7 @@ pub async fn serial_task(
             // aunque el puerto ya se haya cerrado.
             if class.line_coding().data_rate() == 1200 {
                 Timer::after(Duration::from_millis(100)).await;
-                rom_data::reset_to_usb_boot(0, 0);
+                rom_data::reset_to_usb_boot(0, DISABLE_MSC);
             }
             Timer::after(Duration::from_millis(20)).await;
         }
@@ -157,7 +179,7 @@ pub async fn serial_task(
             if coding.data_rate() == 1200 {
                 Timer::after(Duration::from_millis(100)).await;
                 // Reboot al modo BOOTSEL del RP2040 (ROM function)
-                rom_data::reset_to_usb_boot(0, 0);
+                rom_data::reset_to_usb_boot(0, DISABLE_MSC);
             }
 
             // Recibir datos desde el host con un timeout para poder chequear el baud rate periódicamente
@@ -278,7 +300,7 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
                 let _ = write!(resp, "Reiniciando a BOOTSEL...");
                 let _ = TX_CHANNEL.send(resp).await;
                 Timer::after(Duration::from_millis(100)).await;
-                rom_data::reset_to_usb_boot(0, 0);
+                rom_data::reset_to_usb_boot(0, DISABLE_MSC);
                 continue;
             }
             _ => {

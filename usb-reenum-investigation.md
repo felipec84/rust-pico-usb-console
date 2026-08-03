@@ -170,12 +170,36 @@ seguidas.
    cuelgue se reprodujo justamente corriendo SU firmware.
 2. **La placa de pruebas quedó con el firmware del esqueleto** — hay que
    reflashear el datalogger.
-3. **`disable_interface_mask`**: el documento decía que se había cambiado a `1`
-   "en los tres caminos de `console.rs`", pero acá los tres siguen en
-   `reset_to_usb_boot(0, 0)` (líneas 76, 151, 280); solo `main.rs` usa `1`. Ese
-   cambio quedó en el datalogger y nunca bajó al esqueleto. No se tocó durante
-   esta sesión para no mezclar variables en la medición.
-4. **Merge a `master`** (la rama template), con los placeholders.
+3. **Merge a `master`** (la rama template), con los placeholders.
+
+## `disable_interface_mask` — HECHO y verificado
+
+El documento decía que se había cambiado a `1` "en los tres caminos de
+`console.rs`", pero en el esqueleto los tres seguían en
+`reset_to_usb_boot(0, 0)`; el cambio había quedado solo en el datalogger.
+Ya está aplicado acá (constante `DISABLE_MSC`).
+
+El claim se verificó con un A/B en la misma placa, aprovechando que `main.rs`
+ya usaba `1` y `console.rs` todavía usaba `0`:
+
+- **`mask=0`** (baud 1200): el kernel engancha `usb-storage`, aparece
+  `/dev/sda1` con label `RPI-RP2`, y al terminar `picotool load` el disco
+  desaparece en plena operación SCSI:
+  ```
+  device offline error, dev sda, sector 260 op 0x1:(WRITE)
+  Buffer I/O error on dev sda1, logical block 259, lost async page write
+  FAT-fs (sda1): unable to read boot sector to mark fs as dirty
+  ```
+- **`mask=1`** (`picotool reboot -f -u`): ningún `sd*`, ni una sola línea de
+  SCSI en `journalctl`, y picotool sigue funcionando igual — solo usa
+  PICOBOOT, no el disco.
+
+Verificado después en los tres puntos de llamada (baud 1200 dentro y fuera
+del bucle de sesión, y el comando `bootsel`): `console_test.py
+--include-bootsel` da 8/8 sin una línea de almacenamiento en el log.
+
+Es ruido evitable en `journalctl`, **no** la causa del bug de re-enumeración
+— eso ya estaba correctamente descartado en la hipótesis 2.
 
 ## Método (para la próxima cacería parecida)
 
