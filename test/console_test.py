@@ -252,6 +252,29 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
     return checks
 
 
+def run_info(port: str) -> int:
+    """Opens the port, forces a fresh DTR edge, sends 'info' and prints the
+    raw response. Exits 0 if the board answered, 1 otherwise. Meant for
+    scripted measurement (see reenum_loop.sh), not for asserting content."""
+    try:
+        ser = open_fresh_session(port)
+    except serial.SerialException as e:
+        print(f"ERROR: could not open {port}: {e}")
+        return 1
+
+    try:
+        read_until_quiet(ser, quiet_ms=400, max_s=2.0)  # banner + purge
+        resp = send_command(ser, "info")
+    finally:
+        ser.close()
+
+    if resp.strip():
+        print(resp.strip())
+        return 0
+    print("ERROR: no response to 'info'")
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", help="Serial port to use, skips discovery (same as PICO_PORT env var)")
@@ -268,6 +291,12 @@ def main() -> int:
         help="Also test the 'bootsel' command. Leaves the board in BOOTSEL afterward — "
         "you'll need to run ./flash.sh again to restore the firmware.",
     )
+    ap.add_argument(
+        "--info",
+        action="store_true",
+        help="Connect, send 'info', print the raw response and exit 0/1. "
+        "No pass/fail checks — meant for scripted measurement (see reenum_loop.sh).",
+    )
     args = ap.parse_args()
 
     if args.check:
@@ -277,6 +306,13 @@ def main() -> int:
             return 0
         print("NOT FOUND")
         return 1
+
+    if args.info:
+        port = resolve_port(args)
+        if not port:
+            print(f"No device found matching VID:PID {args.vid}:{args.pid}.")
+            return 1
+        return run_info(port)
 
     port = resolve_port(args)
     if not port:
