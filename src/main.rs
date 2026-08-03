@@ -6,6 +6,7 @@ use embassy_rp::adc; // qualificado a propósito: adc::InterruptHandler
 // colisiona de nombre con embassy_rp::usb::InterruptHandler.
 use embassy_rp::bind_interrupts;
 use embassy_rp::flash::{Blocking, Flash};
+use embassy_rp::pac;
 use embassy_rp::peripherals::USB;
 use embassy_rp::rom_data;
 use embassy_rp::usb::{Driver, InterruptHandler};
@@ -132,6 +133,34 @@ impl Handler for PicotoolResetHandler {
 
 static RESET_HANDLER: StaticCell<PicotoolResetHandler> = StaticCell::new();
 
+// ─── Reset duro del bloque USBCTRL ─────────────────────────────────────────
+//
+// `embassy_rp::init()` resetea casi todos los periféricos, pero deja el USB
+// FUERA a propósito (clocks.rs: `peris.set_usbctrl(false)`, con el comentario
+// "USB, SYSCFG (breaks usb-to-swd on core1)"). Y `usb::Driver::new` NO
+// compensa eso con un reset: solo hace un zero-fill de los registros
+// 0x00..0x9C y de los primeros 0x100 de la DPRAM.
+//
+// Ese zero-fill es insuficiente porque SIE_STATUS y BUFF_STATUS son
+// write-1-to-clear: escribirles cero NO los limpia. Cuando venimos de
+// BOOTSEL, el bootrom estuvo manejando este mismo controlador USB y picotool
+// lo reinicia en medio del tráfico, así que la app puede arrancar con bits
+// de estado pegados de la sesión anterior — el síntoma es que la placa nunca
+// se presenta al host y queda muerta hasta desconectar el USB.
+//
+// Llevar el bloque por RESETS es la única forma de garantizar un estado
+// inicial limpio: el reset de periférico sí borra los W1C y el PHY.
+//
+// Debe llamarse DESPUÉS de `embassy_rp::init()` (que configura clk_usb) y
+// ANTES de `Driver::new`, que ya empieza a escribir registros del bloque.
+fn hard_reset_usbctrl() {
+    pac::RESETS.reset().modify(|w| w.set_usbctrl(true));
+    pac::RESETS.reset().modify(|w| w.set_usbctrl(false));
+    // reset_done se levanta cuando el bloque terminó de salir del reset;
+    // tocar sus registros antes de eso es escribir al vacío.
+    while !pac::RESETS.reset_done().read().usbctrl() {}
+}
+
 // Tamaño físico de la flash (Winbond/QSPI en la Pico), no el tamaño usado
 // por el linker en memory.x — necesario para el driver Flash de embassy-rp.
 const FLASH_SIZE: usize = 2 * 1024 * 1024;
@@ -183,6 +212,11 @@ async fn main(spawner: Spawner) {
     // `r` (r.usb_console, r.sensors, ...).
     let r = split_resources!(p);
 
+    // Estado limpio del controlador USB antes de tocarlo — ver la nota junto
+    // a hard_reset_usbctrl(). Sin esto, el arranque después de un
+    // `picotool load -x` puede heredar bits pegados del bootrom.
+    hard_reset_usbctrl();
+
     let driver = Driver::new(r.usb_console.usb, Irqs);
 
     // ── PASO 3: Configurar USB ─────────────────────────────────────────────
@@ -216,13 +250,15 @@ async fn main(spawner: Spawner) {
     // Razón del último reset. None cubre tanto power-on reset como nuestros
     // propios soft-resets (panic-persist / SCB::sys_reset()) — el RP2040 no
     // distingue esos casos en este registro, así que lo decimos tal cual.
-    let watchdog = Watchdog::new(r.usb_console.watchdog);
+    let mut watchdog = Watchdog::new(r.usb_console.watchdog);
     let reset_reason: Option<ResetReason> = watchdog.reset_reason();
 
     // Debe llamarse antes de spawnear ninguna tarea (ver watchdog.rs):
     // corta el arranque con panic!() si venimos de >= 3 reinicios seguidos
     // por timeout del watchdog, en vez de seguir reintentando para siempre.
-    watchdog::check_bootloop(reset_reason);
+    // Necesita el watchdog prestado para leer/re-armar el magic de scratch[4]
+    // con que distingue un cuelgue real de un reboot pedido por picotool.
+    watchdog::check_bootloop(&mut watchdog, reset_reason);
 
     let mut builder = Builder::new(
         driver,
