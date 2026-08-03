@@ -216,13 +216,15 @@ async fn main(spawner: Spawner) {
     // Razón del último reset. None cubre tanto power-on reset como nuestros
     // propios soft-resets (panic-persist / SCB::sys_reset()) — el RP2040 no
     // distingue esos casos en este registro, así que lo decimos tal cual.
-    let watchdog = Watchdog::new(r.usb_console.watchdog);
+    let mut watchdog = Watchdog::new(r.usb_console.watchdog);
     let reset_reason: Option<ResetReason> = watchdog.reset_reason();
 
     // Debe llamarse antes de spawnear ninguna tarea (ver watchdog.rs):
     // corta el arranque con panic!() si venimos de >= 3 reinicios seguidos
     // por timeout del watchdog, en vez de seguir reintentando para siempre.
-    watchdog::check_bootloop(reset_reason);
+    // Necesita el watchdog prestado para leer/re-armar el magic de scratch[4]
+    // con que distingue un cuelgue real de un reboot pedido por picotool.
+    watchdog::check_bootloop(&mut watchdog, reset_reason);
 
     let mut builder = Builder::new(
         driver,

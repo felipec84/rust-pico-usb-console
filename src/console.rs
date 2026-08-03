@@ -254,11 +254,12 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
                 };
                 let _ = write!(
                     resp,
-                    "{} v{}\r\nFlash UID: {}\r\nUltimo reset: {}",
+                    "{} v{}\r\nFlash UID: {}\r\nUltimo reset: {}\r\nWatchdog boot count: {}",
                     crate::PRODUCT_NAME,
                     env!("CARGO_PKG_VERSION"),
                     hex_str,
                     reason,
+                    crate::watchdog::boot_count(),
                 );
             }
             b"temp" => {
