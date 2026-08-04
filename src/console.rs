@@ -274,14 +274,33 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
                     Some(ResetReason::TimedOut) => "watchdog timeout",
                     None => "power-on o soft-reset (el RP2040 no distingue estos casos)",
                 };
+                // Se manda en DOS mensajes a propósito: `resp` es una
+                // heapless::String<200> y `write!` trunca en silencio al
+                // llenarse. Con la línea de procedencia (un `git describe` con
+                // tags puede ser largo) el bloque completo rozaba el límite, y
+                // perder el hash por truncamiento silencioso es justo lo que no
+                // queremos de un dato de trazabilidad.
+                let mut head: heapless::String<200> = heapless::String::new();
                 let _ = write!(
-                    resp,
+                    head,
                     "{} v{}\r\nFlash UID: {}\r\nUltimo reset: {}\r\nWatchdog boot count: {}",
                     crate::PRODUCT_NAME,
                     env!("CARGO_PKG_VERSION"),
                     hex_str,
                     reason,
                     crate::watchdog::boot_count(),
+                );
+                let _ = TX_CHANNEL.send(head).await;
+
+                // Procedencia del binario. GIT_DESCRIBE/GIT_COMMIT_DATE los
+                // inyecta build.rs en tiempo de compilación — ver el comentario
+                // largo allá. Un sufijo "-dirty" significa que este binario NO
+                // salió de un commit limpio: el hash no lo reconstruye.
+                let _ = write!(
+                    resp,
+                    "Firmware: {} ({})",
+                    env!("GIT_DESCRIBE"),
+                    env!("GIT_COMMIT_DATE"),
                 );
             }
             b"temp" => {

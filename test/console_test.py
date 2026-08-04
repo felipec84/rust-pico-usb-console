@@ -165,12 +165,27 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
         c.failed(repr(resp[:120]))
     checks.append(c)
 
-    c = Check("'info' reports flash UID and reset reason")
+    c = Check("'info' reports firmware provenance (git describe + commit date)")
     resp = send_command(ser, "info")
-    if re.search(r"flash uid", resp, re.IGNORECASE) and re.search(
-        r"reset", resp, re.IGNORECASE
+    m_fw = re.search(r"firmware:\s*(\S+)\s*\(([\d-]+)\)", resp, re.IGNORECASE)
+    if m_fw and m_fw.group(1) != "desconocido":
+        dirty = "-dirty" in m_fw.group(1)
+        c.passed(
+            f"{m_fw.group(1)} del {m_fw.group(2)}"
+            + (" — OJO: binario compilado con cambios sin commitear" if dirty else "")
+        )
+    else:
+        c.failed(repr(resp[:200]))
+    checks.append(c)
+
+    c = Check("'info' reports flash UID, reset reason and watchdog boot count")
+    m_count = re.search(r"watchdog boot count:\s*(\d+)", resp, re.IGNORECASE)
+    if (
+        re.search(r"flash uid", resp, re.IGNORECASE)
+        and re.search(r"reset", resp, re.IGNORECASE)
+        and m_count
     ):
-        c.passed()
+        c.passed(f"watchdog boot count: {m_count.group(1)}")
     else:
         c.failed(repr(resp[:200]))
     checks.append(c)
