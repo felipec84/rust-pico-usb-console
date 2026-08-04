@@ -28,9 +28,24 @@ fn git_output(args: &[&str]) -> Option<String> {
 }
 
 fn emit_git_info(manifest_path: &Path) {
-    // Recompilar cuando cambie el commit o el índice. Sin esto, `cargo build`
-    // después de un `git commit` reutilizaría el binario anterior y la tarjeta
-    // quedaría reportando el commit viejo.
+    // Cargo solo re-ejecuta este script cuando cambia alguna de las rutas que
+    // declaramos acá, y de eso depende que el dato no quede rancio. Hay que
+    // cubrir DOS cosas distintas:
+    //
+    //  1. Las fuentes que entran al binario. Sin esto, editar un .rs recompila
+    //     el crate pero NO el build script, así que el binario resultante
+    //     seguiría reportando el `git describe` anterior — sin el `-dirty`.
+    //     Un binario sucio anunciándose como limpio es peor que no tener el
+    //     dato: da confianza falsa. (Pasó de verdad al implementar esto.)
+    //  2. El commit en sí, para que un `git commit` sin editar nada más
+    //     igual refresque el hash.
+    for src in ["src", "Cargo.toml", "Cargo.lock", "build.rs"] {
+        let p = manifest_path.join(src);
+        if p.exists() {
+            println!("cargo:rerun-if-changed={}", p.display());
+        }
+    }
+
     let git_dir = manifest_path.join(".git");
     for f in ["HEAD", "index"] {
         let p = git_dir.join(f);
