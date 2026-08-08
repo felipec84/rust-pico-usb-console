@@ -1,4 +1,6 @@
 /target
+# Carpeta de trabajo local, no parte de la plantilla.
+/_local/
 .claude/settings.local.json
 __pycache__/
 test/reenum_loop.log

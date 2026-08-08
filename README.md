@@ -203,10 +203,11 @@ Connect with a serial monitor (`python3 -m serial.tools.miniterm /dev/ttyACM0
 | Command | What it does |
 |---|---|
 | `help` | Lists the available commands |
-| `info` | Program name/version, flash unique ID (hex), and last reset reason |
+| `info` | Program name/version, flash unique ID (hex), last reset reason, watchdog boot count, and the binary's provenance (`git describe` + commit date, injected at build time by `build.rs`) |
 | `temp` | Reads the RP2040's internal temperature sensor — cached value from `sensors.rs`'s background task (async ADC read, EMA-filtered, RP2040 datasheet §4.9.5 calibration formula), not read live inside the command handler |
 | `uptime` | Milliseconds since boot |
-| `bootsel` | Reboots into BOOTSEL mode (same `rom_data::reset_to_usb_boot` call used by the 1200-baud trick) |
+| `bootsel` | Reboots into BOOTSEL mode (same `rom_data::reset_to_usb_boot` call used by the 1200-baud trick). PICOBOOT only — the RPI-RP2 mass-storage disk stays hidden, which is what `picotool` wants and what keeps `usb-storage` I/O errors out of the host's log |
+| `bootsel disk` | Same, but with the RPI-RP2 disk visible. For hosts **without** `picotool` (e.g. a Raspberry Pi that flashes by copying the `.uf2`), which otherwise have no remote way to reprogram the board at all |
 
 These exist to demonstrate reading real chip info and dispatching commands
 over embassy channels — replace them with your own commands in `app_task`'s

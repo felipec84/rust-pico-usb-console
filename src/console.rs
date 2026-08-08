@@ -51,6 +51,25 @@ pub(crate) static TX_CHANNEL: Channel<ThreadModeRawMutex, heapless::String<200>,
 // usb-reenum-investigation.md).
 const DISABLE_MSC: u32 = 1;
 
+// Máscara 0 = el default de la ROM: aparecen tanto PICOBOOT como el disco.
+const ENABLE_MSC: u32 = 0;
+
+// Entrar a BOOTSEL CON el disco RPI-RP2 visible.
+//
+// Existe para hosts sin picotool. Un host así (una Raspberry Pi que solo corre
+// el script de consola, por ejemplo) se flashea copiando el .uf2 al disco, y
+// con el `bootsel` normal en mask=1 —correcto para un workstation, que usa
+// picotool— se queda sin ninguna vía de flasheo remota: la placa entra a
+// BOOTSEL, no aparece ningún dispositivo de bloque, y hay que ir a desconectar
+// el USB a mano. Este comando devuelve el camino del disco, pero solo cuando se
+// lo pide explícitamente: el default sigue siendo el silencioso.
+fn enter_bootsel_with_disk() -> ! {
+    rom_data::reset_to_usb_boot(0, ENABLE_MSC);
+    loop {
+        cortex_m::asm::nop();
+    }
+}
+
 // pub(crate): la usa main() (número de serie USB, a partir del ID de la
 // flash) además de app_task más abajo (comando "info").
 pub(crate) fn hex_encode_upper(bytes: &[u8], out: &mut [u8]) {
@@ -263,7 +282,7 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
 
         match msg.as_slice() {
             b"help" => {
-                let _ = write!(resp, "Comandos: help, info, temp, uptime, bootsel");
+                let _ = write!(resp, "Comandos: help, info, temp, uptime, bootsel [disk]");
             }
             b"info" => {
                 let mut hex = [0u8; 16];
@@ -274,14 +293,33 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
                     Some(ResetReason::TimedOut) => "watchdog timeout",
                     None => "power-on o soft-reset (el RP2040 no distingue estos casos)",
                 };
+                // Se manda en DOS mensajes a propósito: `resp` es una
+                // heapless::String<200> y `write!` trunca en silencio al
+                // llenarse. Con la línea de procedencia (un `git describe` con
+                // tags puede ser largo) el bloque completo rozaba el límite, y
+                // perder el hash por truncamiento silencioso es justo lo que no
+                // queremos de un dato de trazabilidad.
+                let mut head: heapless::String<200> = heapless::String::new();
                 let _ = write!(
-                    resp,
+                    head,
                     "{} v{}\r\nFlash UID: {}\r\nUltimo reset: {}\r\nWatchdog boot count: {}",
                     crate::PRODUCT_NAME,
                     env!("CARGO_PKG_VERSION"),
                     hex_str,
                     reason,
                     crate::watchdog::boot_count(),
+                );
+                let _ = TX_CHANNEL.send(head).await;
+
+                // Procedencia del binario. GIT_DESCRIBE/GIT_COMMIT_DATE los
+                // inyecta build.rs en tiempo de compilación — ver el comentario
+                // largo allá. Un sufijo "-dirty" significa que este binario NO
+                // salió de un commit limpio: el hash no lo reconstruye.
+                let _ = write!(
+                    resp,
+                    "Firmware: {} ({})",
+                    env!("GIT_DESCRIBE"),
+                    env!("GIT_COMMIT_DATE"),
                 );
             }
             b"temp" => {
@@ -297,11 +335,17 @@ pub async fn app_task(uid: [u8; 8], reset_reason: Option<ResetReason>) {
                 let _ = write!(resp, "Uptime: {} ms", ms);
             }
             b"bootsel" => {
-                let _ = write!(resp, "Reiniciando a BOOTSEL...");
+                let _ = write!(resp, "Reiniciando a BOOTSEL (solo PICOBOOT)...");
                 let _ = TX_CHANNEL.send(resp).await;
                 Timer::after(Duration::from_millis(100)).await;
                 rom_data::reset_to_usb_boot(0, DISABLE_MSC);
                 continue;
+            }
+            b"bootsel disk" => {
+                let _ = write!(resp, "Reiniciando a BOOTSEL con disco RPI-RP2...");
+                let _ = TX_CHANNEL.send(resp).await;
+                Timer::after(Duration::from_millis(100)).await;
+                enter_bootsel_with_disk();
             }
             _ => {
                 let _ = write!(resp, "Comando desconocido. Escribe 'help'.");
