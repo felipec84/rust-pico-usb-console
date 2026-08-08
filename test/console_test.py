@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import pathlib
 import re
 import sys
 import time
@@ -136,7 +137,7 @@ def open_fresh_session(port: str) -> serial.Serial:
     return ser
 
 
-def run_tests(port: str, include_bootsel: bool) -> list[Check]:
+def run_tests(port: str, include_bootsel: bool, bootsel_disk: bool = False) -> list[Check]:
     checks: list[Check] = []
 
     c = Check(f"open {port} and read initial banner")
@@ -245,11 +246,12 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
     checks.append(c)
 
     if include_bootsel:
-        c = Check("'bootsel' reboots into BOOTSEL (device will disappear)")
+        cmd = "bootsel disk" if bootsel_disk else "bootsel"
+        c = Check(f"'{cmd}' reboots into BOOTSEL (device will disappear)")
         try:
             ser = open_fresh_session(port)
             read_until_quiet(ser, quiet_ms=400, max_s=2.0)
-            ser.write(b"bootsel\r\n")
+            ser.write(cmd.encode() + b"\r\n")
             time.sleep(0.5)
             ser.close()
             # Give the reboot a moment, then confirm the CDC port is gone.
@@ -263,6 +265,26 @@ def run_tests(port: str, include_bootsel: bool) -> list[Check]:
         except serial.SerialException as e:
             c.passed(f"port dropped mid-command ({e}) — consistent with reboot")
         checks.append(c)
+
+        # The whole point of the two variants is the mass-storage interface:
+        # plain 'bootsel' must NOT expose the RPI-RP2 disk (that's what keeps
+        # usb-storage I/O errors out of the host log), 'bootsel disk' must.
+        # Linux-only — the label path doesn't exist elsewhere.
+        disk = pathlib.Path("/dev/disk/by-label/RPI-RP2")
+        if sys.platform.startswith("linux"):
+            c = Check(f"'{cmd}' {'exposes' if bootsel_disk else 'hides'} the RPI-RP2 disk")
+            # The kernel needs a moment to enumerate usb-storage and settle the
+            # by-label symlink; absence has to survive the same wait to count.
+            deadline = time.time() + 5.0
+            while time.time() < deadline and disk.exists() != bootsel_disk:
+                time.sleep(0.25)
+            if disk.exists() == bootsel_disk:
+                c.passed(f"{disk} {'present' if bootsel_disk else 'absent'}")
+            elif bootsel_disk:
+                c.failed(f"{disk} never appeared — mask=0 path not reached?")
+            else:
+                c.failed(f"{disk} appeared — DISABLE_MSC is not taking effect")
+            checks.append(c)
 
     return checks
 
@@ -307,6 +329,13 @@ def main() -> int:
         "you'll need to run ./flash.sh again to restore the firmware.",
     )
     ap.add_argument(
+        "--bootsel-disk",
+        action="store_true",
+        help="With --include-bootsel, exercise 'bootsel disk' (mask=0) instead of plain "
+        "'bootsel', and assert the RPI-RP2 disk DOES show up. Only one of the two "
+        "variants can be tested per run — either way the board ends up in BOOTSEL.",
+    )
+    ap.add_argument(
         "--info",
         action="store_true",
         help="Connect, send 'info', print the raw response and exit 0/1. "
@@ -337,7 +366,7 @@ def main() -> int:
         return 1
 
     print(f"Testing console on {port}...\n")
-    checks = run_tests(port, args.include_bootsel)
+    checks = run_tests(port, args.include_bootsel, args.bootsel_disk)
     print()
     for c in checks:
         c.report()
