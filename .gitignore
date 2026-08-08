@@ -1,6 +1,5 @@
 /target
-# Carpeta de trabajo local, no parte de la plantilla: notas sueltas y el buzón
-# de mensajes de otras sesiones (_local/mensajes/).
+# Carpeta de trabajo local, no parte de la plantilla.
 /_local/
 .claude/settings.local.json
 __pycache__/
