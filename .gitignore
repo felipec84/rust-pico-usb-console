@@ -1,4 +1,7 @@
 /target
+# Carpeta de trabajo local, no parte de la plantilla: notas sueltas y el buzón
+# de mensajes de otras sesiones (_local/mensajes/).
+/_local/
 .claude/settings.local.json
 __pycache__/
 test/reenum_loop.log
