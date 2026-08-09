@@ -21,3 +21,18 @@ default = "Pico USB Console"
 type = "string"
 prompt = "USB manufacturer string"
 default = "Raspberry Pi"
+
+# Escribe TEMPLATE_ORIGIN en el proyecto generado: de qué commit de esta
+# plantilla nació. cargo-generate no ofrece nada para esto (ninguna variable
+# expone el template), y sin el sello el derivado queda sin ningún rastro de
+# su origen — ver el comentario largo en stamp.rhai.
+#
+# El script pide correr `git ls-remote`, así que cargo-generate va a pedir
+# confirmación (o exigir --allow-commands en modo silencioso). Se puede negar
+# sin romper nada: el sello está envuelto en try/catch y en ese caso el
+# proyecto se genera igual, con el hash en "desconocido" y las instrucciones
+# para completarlo a mano.
+#
+# Como todo lo de este archivo, el .rhai no viaja al proyecto generado.
+[hooks]
+post = ["stamp.rhai"]
