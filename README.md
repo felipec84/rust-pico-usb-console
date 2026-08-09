@@ -142,7 +142,10 @@ This repo is maintained on two branches:
   here. To update the template afterwards:
   `git checkout master && git merge develop && git checkout develop`.
   **Never commit directly to `master`** — keeping the placeholder lines
-  untouched on `develop` is what keeps these merges conflict-free.
+  untouched on `develop` is what keeps these merges conflict-free. The one
+  exception is the generation machinery itself (`cargo-generate.toml`,
+  `stamp.rhai`), which only makes sense on `master` and has always been
+  committed there; `develop` doesn't carry those files at all.
 
 To start a new project from the template:
 
@@ -159,7 +162,32 @@ cargo generate --git ~/Desarrollos/pico_proyects/rust-pico-usb-console --branch 
 
 cargo-generate prompts for the USB product/manufacturer strings (defaults
 are the stock Pico values) and substitutes the project name into
-`Cargo.toml` and `flash.sh`. Then, in the generated project:
+`Cargo.toml` and `flash.sh`.
+
+It will also ask permission to run one command, `git ls-remote`, which
+writes a `TEMPLATE_ORIGIN` file recording **which template commit the
+project was generated from**. Say yes: without it the generated repo keeps
+no trace of its origin at all — cargo-generate does a fresh `git init` with
+no commits and no remotes, so the two histories share no merge-base and
+there is no way to later ask *"what has landed in the template since I was
+born?"*. Nothing in cargo-generate provides this; no built-in variable
+exposes the template, hence the hook (see `stamp.rhai` on `master`).
+Declining is safe — the project is generated either way, with the commit
+recorded as `desconocido` and instructions to fill it in by hand.
+
+Keep `TEMPLATE_ORIGIN` in version control and bump its `synced:` line each
+time you pull improvements down, so that
+
+```sh
+git log --oneline <synced>..esqueleto/master
+```
+
+keeps answering what you're still missing. Going the other way — sending a
+fix from a derived project back up here — use `git cherry-pick -x`: the
+`-x` records the source hash, which is the only thing that correlates two
+histories with no common ancestor.
+
+Then, in the generated project:
 
 1. If you ship this commercially, set your own USB VID/PID in the
    `CUSTOMIZE PER PROJECT` block in `main()`. The defaults
