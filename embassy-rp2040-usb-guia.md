@@ -3,6 +3,11 @@
 
 > Válida para **Ubuntu 24.04** y **Raspberry Pi 4 (RPiOS Bookworm)**  
 > Sin probe de debug — solo cable USB
+>
+> ⚠️ **Esta guía es anterior a la consola de comandos y al reset del bloque USBCTRL.** El código
+> vigente es el del repo (`src/`), no el de la sección 7: sin `hard_reset_usbctrl()` la placa a veces
+> no re-enumera tras `picotool load -x` (`usb-reenum-investigation.md`). Úsala para entender el
+> montaje; para arrancar un proyecto, usa la plantilla (`README.md` § Using this as a template).
 
 ---
 
