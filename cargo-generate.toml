@@ -6,6 +6,10 @@
 
 [template]
 cargo_generate_version = ">=0.10.0"
+# Archivos de la casa (la máquina de Felipe), no de la plantilla: viven en
+# develop y bajan a master con el merge, pero un proyecto generado no los
+# hereda — hablan de un mecanismo que en otra máquina no existe.
+ignore = ["EN_ESPERA.md", ".buscar.conf"]
 
 [placeholders.product-name]
 type = "string"
