@@ -35,6 +35,16 @@ logic in one place and go.
   a small RAM region (`PANDUMP`, see `memory.x`) and the chip soft-resets.
   The message is replayed over USB-CDC on the next boot, so you can see why
   it crashed without a debug probe attached.
+- **Panic-loop escape to BOOTSEL** (`check_panic_loop`, `src/watchdog.rs`) —
+  a panic *before* USB comes up (an `unwrap`/`assert!` during init) would
+  otherwise reset-loop forever with nothing visible on the host, not even an
+  enumeration error. After 3 consecutive boots that come from a panic, the
+  board jumps to BOOTSEL (PICOBOOT only), so `picotool` can reflash it
+  remotely. A boot that stays up 10 s resets the streak. The panic message
+  survives in RAM and can be read from BOOTSEL:
+  `picotool save -r 0x2003FC00 0x20040000 panic.bin && strings panic.bin`
+  (the address is `PANDUMP` in `memory.x`). To exercise it on hardware, flash
+  a build with `--features test-panic-before-usb`.
 - **Two independent BOOTSEL reset paths:**
   - **1200-baud trick**: opening the serial port at 1200 baud reboots the
     device into BOOTSEL, same as stock Pico boards. Used by `flash.sh`.
@@ -215,6 +225,15 @@ Then, in the generated project:
    `RX_CHANNEL` and answers through `TX_CHANNEL`.
 6. Spawn your new task from `main()` (`src/main.rs`), passing it the resource
    group from step 3 — same pattern as `sensors::sensors_task(r.sensors)`.
+   If you add USB classes (a second CDC, HID…), count the interfaces:
+   embassy-usb defaults to **4** (this template uses 3 — the picotool reset
+   interface plus the 2 of the CDC), and going over trips an `assert!` in the
+   builder while the interfaces are added, at runtime, *before* USB
+   enumerates. Raise it with
+   `features = ["max-interface-count-8"]` on the `embassy-usb` dependency.
+   It can't be caught at compile time: the limit is private to the crate
+   and interfaces are counted at runtime. (If you hit it anyway,
+   `check_panic_loop` above is what lands the board in BOOTSEL.)
 7. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.

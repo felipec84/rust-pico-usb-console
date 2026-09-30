@@ -46,3 +46,9 @@ debug         = 2      # conservar símbolos para addr2line
 opt-level     = "s"    # optimizar por tamaño de flash
 lto           = true
 codegen-units = 1
+
+[features]
+# Firmware de PRUEBA, nunca para producción: entra en pánico antes de levantar
+# el USB, para verificar que check_panic_loop (watchdog.rs) lleva la placa a
+# BOOTSEL al tercer arranque. `cargo build --release --features test-panic-before-usb`
+test-panic-before-usb = []

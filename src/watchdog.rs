@@ -1,5 +1,5 @@
 // ─── Watchdog + protección contra bootloop ─────────────────────────────────
-// Dos responsabilidades separadas:
+// Tres responsabilidades separadas:
 //  1. watchdog_task: alimenta el watchdog periódicamente. Si el executor se
 //     cuelga (deadlock, loop infinito en alguna tarea), el chip se reinicia
 //     solo en vez de quedar colgado indefinidamente.
@@ -10,6 +10,9 @@
 //     p. ej. si el reinicio hace chattear un relé o un actuador físico en
 //     cada ciclo. Tres reinicios y listo: panic limpio (panic-persist deja
 //     el mensaje visible por USB-CDC en el siguiente boot manual).
+//  3. check_panic_loop: si el equipo arranca TRES veces seguidas desde un
+//     pánico, salta a BOOTSEL — un pánico anterior al USB no se ve nunca
+//     desde el host, y sin esto la placa queda inalcanzable.
 
 use embassy_rp::watchdog::{ResetReason, Watchdog};
 use embassy_time::{Duration, Timer};
@@ -99,8 +102,63 @@ pub fn check_bootloop(watchdog: &mut Watchdog, reset_reason: Option<ResetReason>
 #[embassy_executor::task]
 pub async fn watchdog_task(mut watchdog: Watchdog) {
     watchdog.start(Duration::from_millis(1500));
+    let mut ticks: u32 = 0;
     loop {
         watchdog.feed(Duration::from_millis(1500));
         Timer::after(Duration::from_millis(500)).await;
+        ticks = ticks.saturating_add(1);
+        if ticks == PANIC_COUNT_CLEAR_TICKS {
+            // Ver check_panic_loop: sobrevivir este rato cuenta como arranque
+            // sano. Única escritura después del boot, y nadie más la toca.
+            unsafe { PANIC_BOOT_COUNT = 0 };
+        }
+    }
+}
+
+// ─── Bucle de pánicos → BOOTSEL ────────────────────────────────────────────
+//
+// Un pánico ANTES de que el USB se presente al host (un assert! del builder de
+// embassy-usb, un unwrap en la inicialización) deja la placa en un bucle sin
+// fin: panic-persist reinicia, el mismo código vuelve a entrar en pánico, y el
+// host no ve nada — ni siquiera un error de enumeración, porque el pull-up de
+// D+ nunca se levanta. El mensaje queda en RAM, pero sin USB nadie puede
+// leerlo. Medido el 2026-09-29 en pico-ds18b20-datalogger (el assert! de
+// max-interface-count de embassy-usb, ver README): la placa estaba en un
+// equipo remoto y solo se recuperó enchufándola con BOOTSEL apretado.
+//
+// Por eso, tras MAX_CONSECUTIVE_PANIC_BOOTS arranques seguidos que vienen de
+// un pánico, se salta a BOOTSEL (solo PICOBOOT): `picotool` puede reflashear
+// sin tocar la placa. El mensaje sigue legible desde BOOTSEL, porque
+// panic-persist solo borra su magic al leerlo, no el texto, y la ROM no pisa
+// PANDUMP:
+//
+//   picotool save -r 0x2003FC00 0x20040000 panic.bin && strings panic.bin
+//
+// (dirección = PANDUMP en memory.x). "Seguidos" se corta cuando un arranque
+// sobrevive PANIC_COUNT_CLEAR_TICKS: un pánico por hora no es un bucle.
+//
+// Por qué no chequear en check_bootloop: aquel cuenta timeouts del watchdog y
+// termina en panic!(), cuyo mensaje SÍ se ve por USB en el arranque siguiente.
+// Este caso es justo el contrario: el pánico impide que haya USB.
+//
+// `.uninit` por la misma razón que WATCHDOG_REBOOT_COUNT. Tras un power-on
+// puede contener basura, pero ahí no hay mensaje de pánico y se pone a 0 sin
+// leerla.
+#[unsafe(link_section = ".uninit")]
+static mut PANIC_BOOT_COUNT: u32 = 0;
+
+const MAX_CONSECUTIVE_PANIC_BOOTS: u32 = 3;
+const PANIC_COUNT_CLEAR_TICKS: u32 = 20; // × 500 ms de watchdog_task = 10 s
+
+/// Debe llamarse al principio de `main()`, apenas leído el mensaje de
+/// panic-persist y antes de inicializar nada que pueda volver a entrar en
+/// pánico. No retorna si detecta el bucle.
+pub fn check_panic_loop(came_from_panic: bool) {
+    unsafe {
+        PANIC_BOOT_COUNT = if came_from_panic { PANIC_BOOT_COUNT.wrapping_add(1) } else { 0 };
+        if PANIC_BOOT_COUNT >= MAX_CONSECUTIVE_PANIC_BOOTS {
+            PANIC_BOOT_COUNT = 0;
+            embassy_rp::rom_data::reset_to_usb_boot(0, 1);
+        }
     }
 }
