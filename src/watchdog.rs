@@ -35,11 +35,18 @@ pub fn boot_count() -> u32 {
 // `.uninit`: esta sección NO se inicializa a cero en el arranque — sobrevive
 // a un soft-reset (panic-persist, SCB::sys_reset(), timeout del watchdog),
 // que es justo lo que hace falta para poder CONTAR reinicios consecutivos.
-// Si sobreviviera también a un power-on real dejaría de servir como
-// contador ("consecutivos" perdería sentido), pero un power-on sí borra la
-// RAM completa en el RP2040, así que el efecto neto es el correcto: cuenta
-// reinicios encadenados sin intervención humana, se reinicia solo a 0 en
-// cuanto hay un power-cycle real o un reset por otra causa.
+//
+// Lo que NO hay que suponer: que la RAM quede en cero tras un power-on.
+// Ningún reset borra la SRAM, y después de cortar la alimentación arranca con
+// basura (cada celda cae a 0 o 1 según asimetrías de fabricación), no en
+// ceros; un corte muy corto puede incluso dejar parte del contenido anterior.
+// Ni el bootrom ni cortex-m-rt limpian `.uninit`. (Física general de la SRAM,
+// no medido en este chip.)
+//
+// Por eso el contador nunca se lee a ciegas: solo cuenta si el motivo del
+// reset es TimedOut Y scratch[4] trae nuestro magic — registros del watchdog
+// que el power-on sí resetea. En cualquier otro caso se pone a 0 sin mirar
+// lo que había. Una variable nueva en `.uninit` necesita una validación así.
 //
 // Acceso: un único punto de lectura/escritura (check_bootloop), llamado una
 // sola vez, antes de spawnear ninguna tarea — no hay concurrencia posible
