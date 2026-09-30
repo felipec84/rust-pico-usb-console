@@ -26,8 +26,10 @@ logic in one place and go.
   1-Wire) live behind a fast console without blocking command handling.
 - **Watchdog + bootloop guard** (`src/watchdog.rs`) — a task feeds the
   hardware watchdog periodically so a hung executor self-recovers by reset.
-  A reboot counter stored in the `.uninit` RAM section (survives soft-resets,
-  cleared by real power-on) escalates to a clean `panic!()` after 3
+  A reboot counter stored in the `.uninit` RAM section (survives soft-resets;
+  after a power-off it holds garbage, not zeros, so it is only trusted when
+  the watchdog's own registers confirm a real timeout — otherwise it is reset
+  to 0 without being read) escalates to a clean `panic!()` after 3
   consecutive watchdog-triggered resets, instead of reset-looping forever —
   important if a reset has a physical side effect (relay chatter, etc.) on
   your hardware.
