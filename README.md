@@ -203,6 +203,13 @@ fix from a derived project back up here — use `git cherry-pick -x`: the
 `-x` records the source hash, which is the only thing that correlates two
 histories with no common ancestor.
 
+The `synced:` line is only as honest as whoever bumped it: bump it only once
+**every** template commit up to that hash is in, and when in doubt, check by
+signature — grep the derived project for a symbol each fix introduces
+(`WATCHDOG_OWN_RESET_MAGIC`, `hard_reset_usbctrl`, `check_panic_loop`…). On
+2026-09-29 a derived project said `synced: 97acfe5` while missing two fixes
+older than that commit, so `git log <synced>..` hid exactly what it lacked.
+
 Then, in the generated project:
 
 1. If you ship this commercially, set your own USB VID/PID in the

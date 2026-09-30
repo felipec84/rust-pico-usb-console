@@ -30,6 +30,22 @@ Add `--include-bootsel` only if you intend to also verify the `bootsel`
 command — it reboots the board into BOOTSEL and leaves it there, requiring
 another `./flash.sh` afterward. Don't pass it by default.
 
+**No Pico here? Felipe may offer one on another machine** (he gives the host;
+don't store it). The recipe that worked on 2026-09-29: build here, `scp` the
+ELF, and on that machine:
+
+```sh
+picotool save -a -f respaldo.uf2        # FIRST: back up whatever it runs (-a, full flash)
+picotool load -f <firmware>.elf -x      # flash + run; -f reboots it into BOOTSEL itself
+uv run console_test.py                  # copied over too
+picotool load -f respaldo.uf2 -x        # LAST: leave it as you found it
+```
+
+Two `picotool` traps measured that day: `save -p` fails with *"Cannot
+determine the binary size"* on firmware it didn't tag, hence `-a`; and a
+command issued right after another `-f` can hit *"returned an error:
+rebooting"* — wait a few seconds and retry.
+
 When you add your own console commands (per the README's "Using this as a
 template" section), add a matching check to `test/console_test.py` in the
 same change — the test script is meant to track whatever commands actually
