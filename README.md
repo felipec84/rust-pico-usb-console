@@ -35,6 +35,16 @@ logic in one place and go.
   a small RAM region (`PANDUMP`, see `memory.x`) and the chip soft-resets.
   The message is replayed over USB-CDC on the next boot, so you can see why
   it crashed without a debug probe attached.
+- **Panic-loop escape to BOOTSEL** (`check_panic_loop`, `src/watchdog.rs`) —
+  a panic *before* USB comes up (an `unwrap`/`assert!` during init) would
+  otherwise reset-loop forever with nothing visible on the host, not even an
+  enumeration error. After 3 consecutive boots that come from a panic, the
+  board jumps to BOOTSEL (PICOBOOT only), so `picotool` can reflash it
+  remotely. A boot that stays up 10 s resets the streak. The panic message
+  survives in RAM and can be read from BOOTSEL:
+  `picotool save -r 0x2003FC00 0x20040000 panic.bin && strings panic.bin`
+  (the address is `PANDUMP` in `memory.x`). To exercise it on hardware, flash
+  a build with `--features test-panic-before-usb`.
 - **Two independent BOOTSEL reset paths:**
   - **1200-baud trick**: opening the serial port at 1200 baud reboots the
     device into BOOTSEL, same as stock Pico boards. Used by `flash.sh`.
@@ -78,18 +88,18 @@ Manual build only: `cargo build --release`.
 
 Serial monitor: `python3 -m serial.tools.miniterm /dev/ttyACM0 115200`.
 
-**Known flaky spot (under investigation):** occasionally, after `picotool
-load -x` reports success and reboots the board into the app, the device
-doesn't re-enumerate at all — not as the app, not back in BOOTSEL, nothing
-in `lsusb`/`dmesg` — for a long time (60s+). It has always recovered with a
-physical unplug/replug (sometimes into a different USB port), and once
-recovered, the same firmware runs correctly and repeatably. Not yet
-reproduced with a clear trigger; current suspicion is a `picotool -x` /
-host USB re-enumeration quirk rather than a firmware defect — the console
-itself has passed the full `test/console_test.py` suite, including a real
-`bootsel` reboot cycle, multiple times back to back once the board is
-actually enumerated. If you hit it, unplug/replug (a different port seems
-to help) rather than assume the firmware is broken.
+**Board not re-enumerating after `picotool load -x` — fixed.** It used to
+happen intermittently (~60% of BOOTSEL→app transitions in the worst case):
+`embassy_rp::init()` resets every peripheral *except* USBCTRL, so the app
+inherited the bootrom's USB state. `main.rs` now hard-resets the USBCTRL
+block before `Driver::new`. The full hunt, including the hypotheses that
+looked right and weren't, is in `usb-reenum-investigation.md`.
+
+**Still flaky, and on the host side:** `stty -F <port> 1200` (the 1200-baud
+reset, also used inside `flash.sh`) occasionally hangs indefinitely on some
+hosts — a tty-driver quirk, not the firmware. If `flash.sh` sits at step
+[3/5], check `ps aux | grep stty`, kill it and retry; it usually works on
+the second attempt.
 
 ## Hardware test
 
@@ -117,7 +127,11 @@ gating on "is a Pico plugged in right now" — use:
 uv run test/console_test.py --check   # exit 0 + prints the port if found, 1 if not
 ```
 
-This does discovery only; it never opens the serial port. See `CLAUDE.md`
+This does discovery only; it never opens the serial port. It matches on
+VID:PID, and the stock `2E8A:000A` is shared by **every project generated
+from this template** — so "a board was found" doesn't mean it runs *this*
+firmware. Before flashing, or before claiming a result, check the product
+string (`lsusb | grep -i 2e8a`, or the banner / `info`). See `CLAUDE.md`
 for how this is meant to fit into a Claude Code session working on this
 repo.
 
@@ -211,6 +225,15 @@ Then, in the generated project:
    `RX_CHANNEL` and answers through `TX_CHANNEL`.
 6. Spawn your new task from `main()` (`src/main.rs`), passing it the resource
    group from step 3 — same pattern as `sensors::sensors_task(r.sensors)`.
+   If you add USB classes (a second CDC, HID…), count the interfaces:
+   embassy-usb defaults to **4** (this template uses 3 — the picotool reset
+   interface plus the 2 of the CDC), and going over trips an `assert!` in the
+   builder while the interfaces are added, at runtime, *before* USB
+   enumerates. Raise it with
+   `features = ["max-interface-count-8"]` on the `embassy-usb` dependency.
+   It can't be caught at compile time: the limit is private to the crate
+   and interfaces are counted at runtime. (If you hit it anyway,
+   `check_panic_loop` above is what lands the board in BOOTSEL.)
 7. Adjust `memory.x` only if you change flash size or need a bigger `PANDUMP`
    region — the rest (boot2, `.bi_entries`, panic dump symbols) is
    boilerplate every RP2040 project needs.
@@ -243,6 +266,11 @@ over embassy channels — replace them with your own commands in `app_task`'s
 `console.rs`) holds 32 pending lines, so a command that replies with several
 `TX_CHANNEL.send(...).await` calls (e.g. a multi-line dump) doesn't silently
 drop lines the way a shallower channel combined with `try_send` would.
+If you add a command that dumps rows of data for a host program to parse,
+make its **first line a header** (e.g. `#tick,p1_c,p2_c`) so the host learns
+the column layout from the firmware itself instead of guessing it from the
+width of the first row — guessing is what broke a data-format migration in a
+project derived from this template.
 
 Two honest limitations worth knowing:
 

@@ -204,6 +204,10 @@ async fn main(spawner: Spawner) {
     // que permanece válida durante toda la ejecución. No hay copia.
     let panic_msg: Option<&'static str> = panic_persist::get_panic_message_utf8();
 
+    // Tres arranques seguidos desde un pánico ⇒ BOOTSEL, para que un pánico
+    // anterior al USB no deje la placa inalcanzable. Ver watchdog.rs.
+    watchdog::check_panic_loop(panic_msg.is_some());
+
     // ── PASO 2: Inicializar hardware ──────────────────────────────────────
     let p = embassy_rp::init(Default::default());
 
@@ -283,6 +287,12 @@ async fn main(spawner: Spawner) {
     let state = STATE.init(State::new());
     let class = CdcAcmClass::new(&mut builder, state, 64);
     let usb = builder.build();
+
+    // Solo para probar check_panic_loop en hardware: un pánico en el mismo
+    // punto que el assert! de max-interface-count, antes de que el USB se
+    // presente al host.
+    #[cfg(feature = "test-panic-before-usb")]
+    panic!("prueba: panico forzado antes del USB (feature test-panic-before-usb)");
 
     // ── PASO 4: Lanzar tareas ─────────────────────────────────────────────
     spawner.spawn(console::usb_task(usb).unwrap());

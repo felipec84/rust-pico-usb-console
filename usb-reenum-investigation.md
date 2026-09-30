@@ -165,14 +165,9 @@ seguidas.
 
 ## Pendiente
 
-1. **Bajar los fixes al datalogger** (`../pico-ds18b20-datalogger`): tiene una
-   copia del mismo `main.rs`/`watchdog.rs` y por lo tanto los dos bugs. El
-   cuelgue se reprodujo justamente corriendo SU firmware. Le faltan solo dos
-   de los tres commits — el del disco RPI-RP2 ya lo tiene (`92ae315`).
-
-Lo demás quedó hecho en esta sesión: merge a `master` (verificado generando
-un proyecto con `cargo generate --branch master`, que compila y lleva los
-tres fixes) y push de ambas ramas.
+Nada. Los dos fixes bajaron también al datalogger (`../pico-ds18b20-datalogger`, que tenía copia de
+`main.rs`/`watchdog.rs` y por eso los dos bugs): `ec484fd` y `fec60eb` en su historia, verificado el
+2026-09-26 con `git -C ../pico-ds18b20-datalogger log --oneline | grep -i -E "usbctrl|bootloop"`.
 
 ## `disable_interface_mask` — HECHO y verificado
 
